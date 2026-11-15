@@ -147,13 +147,19 @@ flowchart TD
           self.db = db
 
       def find_one(self, collection: str, query: dict, session=None, **kwargs):
-          return self.db[collection].find_one({**query, "tenant_id": self.tenant_id, "deleted_at": None}, session=session, **kwargs)
+          return self.db[collection].find_one(
+              {**query, "tenant_id": self.tenant_id, "deleted_at": None}, session=session, **kwargs
+          )
 
       def find_with_deleted(self, collection: str, query: dict, session=None, **kwargs):
-          return self.db[collection].find_one({**query, "tenant_id": self.tenant_id}, session=session, **kwargs)
+          return self.db[collection].find_one(
+              {**query, "tenant_id": self.tenant_id}, session=session, **kwargs
+          )
 
       def find(self, collection: str, query: dict, session=None, **kwargs):
-          return self.db[collection].find({**query, "tenant_id": self.tenant_id, "deleted_at": None}, session=session, **kwargs)
+          return self.db[collection].find(
+              {**query, "tenant_id": self.tenant_id, "deleted_at": None}, session=session, **kwargs
+          )
 
       def insert_one(self, collection: str, document: dict, session=None, **kwargs):
           if "tenant_id" in document and document["tenant_id"] != self.tenant_id:
