@@ -142,3 +142,16 @@ JWT_SECRET_KEY = os.getenv(
 )
 JWT_ALGORITHM = "HS256"
 JWT_ACCESS_TOKEN_LIFETIME_SECONDS = int(os.getenv("JWT_LIFETIME_SECONDS", "900"))  # 15 min
+
+# AWS / LocalStack Configuration
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "test")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "test")
+AWS_ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+SQS_OUTBOX_QUEUE_URL = os.getenv(
+    "SQS_OUTBOX_QUEUE_URL", "http://localhost:4566/000000000000/forge-events"
+)
+SQS_DLQ_QUEUE_URL = os.getenv(
+    "SQS_DLQ_QUEUE_URL", "http://localhost:4566/000000000000/forge-events-dlq"
+)
+S3_EXPORT_BUCKET_NAME = os.getenv("S3_EXPORT_BUCKET_NAME", "forge-exports")

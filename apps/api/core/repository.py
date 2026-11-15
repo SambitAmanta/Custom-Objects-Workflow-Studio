@@ -43,11 +43,21 @@ class TenantScopedRepository:
     4. Forwards PyMongo ClientSession for multi-document transaction atomicity.
     """
 
-    def __init__(self, tenant_id: str | Any, db: Database | None = None):
+    def __init__(
+        self,
+        tenant_id: str | Any,
+        db: Database | None = None,
+        mongo_client: pymongo.MongoClient | None = None,
+    ):
         if not tenant_id or not str(tenant_id).strip():
             raise ValueError("TenantScopedRepository requires an authenticated non-empty tenant_id")
         self.tenant_id = str(tenant_id).strip()
-        self.db = db if db is not None else get_mongo_db()
+        if db is not None:
+            self.db = db
+        elif mongo_client is not None:
+            self.db = mongo_client[settings.MONGO_DB_NAME]
+        else:
+            self.db = get_mongo_db()
 
     def _scope_filter(self, query: dict | None = None, include_deleted: bool = False) -> dict:
         scoped = dict(query) if query else {}
