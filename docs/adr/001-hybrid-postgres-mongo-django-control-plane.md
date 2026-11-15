@@ -28,3 +28,4 @@ We adopt a **hybrid persistence architecture**:
 ### Negative & Mitigations
 - **Dual Persistence Infrastructure:** Two database engines (Postgres and MongoDB) must be maintained in production and local environments. *Mitigation:* Managed cloud instances (RDS/Aurora and MongoDB Atlas) alongside containerized Docker Compose configurations for local development.
 - **Cross-Engine Referential Integrity:** Foreign keys cannot span between Postgres (users) and Mongo (records). *Mitigation:* Enforced at the application and serializer layer inside Django views and `TenantScopedRepository`.
+

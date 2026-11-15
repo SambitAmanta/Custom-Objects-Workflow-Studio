@@ -27,3 +27,4 @@ pythonpath = ["apps/api"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --strict-markers"
+
