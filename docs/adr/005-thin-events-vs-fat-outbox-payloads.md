@@ -29,3 +29,4 @@ We chose **Thin Events in the Outbox and Messaging Pipeline**.
   - Compact SQS messages and lightweight outbox collection storage.
 - **Negative**:
   - Consumers that need record data must perform a read against MongoDB. Because MongoDB read latency is sub-millisecond on indexed `_id`, this trade-off is well worth the security guarantee.
+

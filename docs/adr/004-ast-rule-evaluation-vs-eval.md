@@ -29,3 +29,4 @@ We implemented a **Constrained Tree-Walking AST Evaluator (Safe JSONLogic AST)**
   - Predictable sub-millisecond execution times.
 - **Negative**:
   - Expressiveness is limited to propositional logic and arithmetic comparisons. Complex imperative scripts or external network calls inside rule guards are disallowed (which is a desired safety constraint in multi-tenant environments).
+

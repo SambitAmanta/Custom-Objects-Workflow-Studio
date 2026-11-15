@@ -17,3 +17,4 @@ output "exports_bucket_name" {
   description = "Name of the S3 bucket for CSV exports"
   value       = aws_s3_bucket.exports_bucket.id
 }
+

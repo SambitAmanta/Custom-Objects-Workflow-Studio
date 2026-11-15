@@ -286,3 +286,4 @@ export const RecordExplorer: React.FC<RecordExplorerProps> = ({
     </div>
   );
 };
+

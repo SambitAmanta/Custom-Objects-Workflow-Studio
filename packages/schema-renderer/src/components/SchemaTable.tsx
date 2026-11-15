@@ -220,3 +220,4 @@ export const SchemaTable: React.FC<SchemaTableProps> = ({
     </div>
   );
 };
+

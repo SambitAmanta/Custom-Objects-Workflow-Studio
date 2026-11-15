@@ -36,3 +36,4 @@ export function isFieldEditable(
 ): boolean {
   return getFieldPermission(schema, fieldName, role) === "write";
 }
+

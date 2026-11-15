@@ -37,3 +37,4 @@ We chose the **Transactional Outbox Pattern with a Leased Relay Worker and AWS S
 - **Negative**:
   - Adds a small polling delay (100–500ms) compared to instantaneous oplog tailing.
   - Requires maintaining the relay worker process alongside the API workers.
+

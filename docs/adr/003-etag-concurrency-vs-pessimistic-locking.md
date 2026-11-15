@@ -35,3 +35,4 @@ We chose **Optimistic Concurrency Control (OCC) via HTTP ETags and Version Field
   - Standard HTTP status codes give frontend clients clear signals to prompt user resolution or refetch latest state.
 - **Negative**:
   - High contention on the exact same record results in retries for the losing client. However, custom object record updates are typically user-driven or bounded, making write conflicts rare and easily handled.
+

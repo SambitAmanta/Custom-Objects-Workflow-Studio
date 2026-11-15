@@ -2,17 +2,10 @@
   "name": "@forge/schema-renderer",
   "version": "0.1.0",
   "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
-  },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "test": "node --test test/schemaRenderer.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.16.0"

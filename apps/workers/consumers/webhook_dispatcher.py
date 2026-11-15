@@ -256,4 +256,34 @@ class WebhookDispatcherConsumer(BaseSQSConsumer):
             max_attempts,
             endpoint.id,
         )
+
+        dlq_entry = {
+            "endpoint_id": str(endpoint.id),
+            "tenant_id": str(endpoint.tenant_id),
+            "target_url": target_url,
+            "payload": payload,
+            "attempts": max_attempts,
+            "failed_at": timezone.now().isoformat(),
+        }
+
+        # Record in failed deliveries collection
+        try:
+            self.db["failed_webhook_deliveries"].insert_one(dlq_entry)
+        except Exception as e:
+            logger.error("Failed persisting failed webhook delivery: %s", e)
+
+        # Route to AWS SQS DLQ if configured
+        if self.dlq_url and self.sqs:
+            try:
+                self.sqs.send_message(
+                    QueueUrl=self.dlq_url,
+                    MessageBody=json.dumps(payload),
+                    MessageAttributes={
+                        "endpoint_id": {"DataType": "String", "StringValue": str(endpoint.id)},
+                        "attempts": {"DataType": "Number", "StringValue": str(max_attempts)},
+                    },
+                )
+            except Exception as e:
+                logger.error("Failed sending dead letter to SQS DLQ: %s", e)
+
         return False

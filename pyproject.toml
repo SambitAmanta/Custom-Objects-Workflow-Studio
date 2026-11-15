@@ -21,6 +21,10 @@ ignore = [
     "E501", # line length violations (handled by formatter)
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"scripts/*" = ["E402"]
+"apps/workers/run_worker.py" = ["E402"]
+
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"
 pythonpath = ["apps/api"]

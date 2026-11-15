@@ -389,3 +389,4 @@ export const SchemaEditor: React.FC<SchemaEditorProps> = ({
     </div>
   );
 };
+

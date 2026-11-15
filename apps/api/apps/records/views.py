@@ -27,6 +27,13 @@ def _get_principal_info(request) -> tuple[str, str]:
     return principal_id, role
 
 
+def _get_principal_info(request) -> tuple[str, str]:
+    principal = getattr(request, "auth", None)
+    principal_id = getattr(principal, "id", "anonymous")
+    role = getattr(principal, "role", "viewer")
+    return principal_id, role
+
+
 def _parse_if_match_header(request) -> int:
     header = request.headers.get("If-Match")
     if not header:

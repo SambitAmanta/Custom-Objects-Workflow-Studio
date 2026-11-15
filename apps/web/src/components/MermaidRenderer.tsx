@@ -76,3 +76,4 @@ export const MermaidRenderer: React.FC<MermaidRendererProps> = ({ chart }) => {
     />
   );
 };
+

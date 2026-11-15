@@ -96,19 +96,7 @@ class RecordService:
         }
 
         def _transaction_work(session):
-            # A. If idempotency key provided, insert idempotency doc inside the transaction
-            if idempotency_key and request_hash:
-                self.idempotency_manager.save_response(
-                    principal_id=principal_id,
-                    key=idempotency_key,
-                    request_hash=request_hash,
-                    status_code=201,
-                    response_headers={"ETag": 'W/"1"'},
-                    response_body=response_record,
-                    session=session,
-                )
-
-            # B. Insert unique_keys
+            # A. Insert unique_keys first: if unique constraint violated, abort immediately
             for uf in unique_fields:
                 field_name = uf["name"]
                 if field_name in data and data[field_name] is not None:
@@ -124,6 +112,18 @@ class RecordService:
                         },
                         session=session,
                     )
+
+            # B. If idempotency key provided, save response inside the transaction
+            if idempotency_key and request_hash:
+                self.idempotency_manager.save_response(
+                    principal_id=principal_id,
+                    key=idempotency_key,
+                    request_hash=request_hash,
+                    status_code=201,
+                    response_headers={"ETag": 'W/"1"'},
+                    response_body=response_record,
+                    session=session,
+                )
 
             # C. Insert record
             record_doc = {
@@ -182,15 +182,7 @@ class RecordService:
             result = self.uow.run_transaction(_transaction_work)
             return result, False
         except DuplicateKeyError as e:
-            # 1. Check if idempotency key caused it
-            if idempotency_key:
-                cached = self.idempotency_manager.get_cached_response(
-                    principal_id, idempotency_key, request_hash
-                )
-                if cached:
-                    return cached["body"], True
-
-            # 2. Check which unique field caused it by checking unique_keys
+            # 1. Check which unique field caused it by checking unique_keys first
             for uf in unique_fields:
                 field_name = uf["name"]
                 if field_name in data and data[field_name] is not None:
@@ -205,6 +197,14 @@ class RecordService:
                     )
                     if existing_key:
                         raise UniqueConstraintError(field_name) from e
+
+            # 2. Check if idempotency key caused it
+            if idempotency_key:
+                cached = self.idempotency_manager.get_cached_response(
+                    principal_id, idempotency_key, request_hash
+                )
+                if cached:
+                    return cached["body"], True
 
             if unique_fields:
                 raise UniqueConstraintError(unique_fields[0]["name"]) from e

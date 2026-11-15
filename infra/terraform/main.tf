@@ -52,3 +52,4 @@ resource "aws_s3_bucket_public_access_block" "exports_block_public" {
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
+
