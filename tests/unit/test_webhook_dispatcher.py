@@ -10,7 +10,6 @@ from apps.authentication.models import RoleChoices, Tenant
 from apps.schemas.services import SchemaRegistryService
 from apps.webhooks.models import WebhookEndpoint
 from core.repository import TenantScopedRepository
-
 from workers.consumers.webhook_dispatcher import (
     SSRFSecurityViolation,
     WebhookDispatcherConsumer,

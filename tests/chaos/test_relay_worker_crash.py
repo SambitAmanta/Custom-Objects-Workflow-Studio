@@ -5,7 +5,6 @@ import boto3
 import mongomock
 import pytest
 from moto import mock_aws
-
 from workers.consumers.base import BaseSQSConsumer
 from workers.relay.publisher import OutboxRelayWorker
 

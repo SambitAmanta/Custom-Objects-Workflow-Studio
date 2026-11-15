@@ -6,7 +6,6 @@ import boto3
 import mongomock
 import pytest
 from moto import mock_aws
-
 from workers.consumers.csv_exporter import CSVStreamingExporter
 
 
