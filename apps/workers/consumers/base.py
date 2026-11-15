@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class BaseSQSConsumer(ABC):
-    """Abstract Base SQS Consumer featuring an idempotent deduplication ledger
+    """Abstract Base SQS Consumer featuring a leased idempotent deduplication ledger
 
     to guarantee zero duplicate effects across asynchronous consumers.
     """
@@ -61,13 +62,18 @@ class BaseSQSConsumer(ABC):
         except Exception as e:
             logger.debug(f"Ledger index creation note: {e}")
 
-    def claim_event_deduplication(self, tenant_id: str, event_id: str, version: int = 1) -> bool:
-        """Atomically inserts into deduplication ledger.
+    def claim_event_deduplication(
+        self, tenant_id: str, event_id: str, version: int = 1, lease_seconds: int = 30
+    ) -> bool:
+        """Atomically acquires a leased processing claim in the deduplication ledger.
 
-        Returns True if this consumer claimed processing rights (first time seen),
-        or False if it is a duplicate delivery (already processed or currently claimed).
+        Returns True if processing rights are acquired (first delivery or expired lease retry),
+        or False if already marked completed or actively leased by another worker.
         """
-        now = timezone.now().isoformat()
+        now = timezone.now()
+        now_iso = now.isoformat()
+        lease_exp = (now + datetime.timedelta(seconds=lease_seconds)).isoformat()
+
         try:
             self.ledger.insert_one(
                 {
@@ -75,18 +81,60 @@ class BaseSQSConsumer(ABC):
                     "event_id": event_id,
                     "consumer_name": self.consumer_name,
                     "version": version,
-                    "processed_at": now,
+                    "status": "processing",
+                    "locked_until": lease_exp,
+                    "claimed_at": now_iso,
                 }
             )
             return True
         except pymongo.errors.DuplicateKeyError:
-            logger.info(
-                "Consumer %s: duplicate event %s detected for tenant %s. Skipping duplicate effect.",
-                self.consumer_name,
-                event_id,
-                tenant_id,
+            existing = self.ledger.find_one(
+                {
+                    "tenant_id": tenant_id,
+                    "event_id": event_id,
+                    "consumer_name": self.consumer_name,
+                }
             )
+            if not existing:
+                return False
+            if existing.get("status") == "completed":
+                return False
+
+            locked_until = existing.get("locked_until")
+            if locked_until and locked_until < now_iso:
+                updated = self.ledger.find_one_and_update(
+                    {
+                        "tenant_id": tenant_id,
+                        "event_id": event_id,
+                        "consumer_name": self.consumer_name,
+                        "locked_until": locked_until,
+                    },
+                    {
+                        "$set": {
+                            "locked_until": lease_exp,
+                            "reclaimed_at": now_iso,
+                        }
+                    },
+                )
+                return updated is not None
             return False
+
+    def mark_event_completed(self, tenant_id: str, event_id: str) -> None:
+        """Marks event as permanently completed in the deduplication ledger."""
+        now_iso = timezone.now().isoformat()
+        self.ledger.update_one(
+            {
+                "tenant_id": tenant_id,
+                "event_id": event_id,
+                "consumer_name": self.consumer_name,
+            },
+            {
+                "$set": {
+                    "status": "completed",
+                    "completed_at": now_iso,
+                }
+            },
+        )
 
     @abstractmethod
     def handle_event(self, event: dict[str, Any]) -> None:
@@ -118,15 +166,16 @@ class BaseSQSConsumer(ABC):
                     self.sqs.delete_message(QueueUrl=self.queue_url, ReceiptHandle=receipt_handle)
                     continue
 
-                # Deduplication Gate
-                is_first_delivery = self.claim_event_deduplication(
+                # Leased Deduplication Gate
+                is_claimed = self.claim_event_deduplication(
                     tenant_id=tenant_id, event_id=event_id, version=version
                 )
 
-                if is_first_delivery:
+                if is_claimed:
                     self.handle_event(event)
+                    self.mark_event_completed(tenant_id=tenant_id, event_id=event_id)
 
-                # Acknowledge / delete message from SQS
+                # Acknowledge / delete message from SQS upon successful completion
                 self.sqs.delete_message(QueueUrl=self.queue_url, ReceiptHandle=receipt_handle)
                 processed_count += 1
             except Exception as e:

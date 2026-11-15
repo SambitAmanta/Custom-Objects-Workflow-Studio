@@ -1,0 +1,137 @@
+{
+  "root_group": {
+    "name": "",
+    "path": "",
+    "id": "d41d8cd98f00b204e9800998ecf8427e",
+    "groups": [],
+    "checks": [
+      {
+        "name": "record created status is 201 or 200",
+        "path": "::record created status is 201 or 200",
+        "id": "9796e6205cf1be5e90eaee60105b3806",
+        "passes": 3334,
+        "fails": 0
+      },
+      {
+        "name": "record has valid id",
+        "path": "::record has valid id",
+        "id": "bb96a32cb390e1cbb3273eefb2241b71",
+        "passes": 3334,
+        "fails": 0
+      },
+      {
+        "name": "list records status is 200",
+        "path": "::list records status is 200",
+        "id": "19b5d326c9dfbd333bf89aafe7ea2083",
+        "passes": 3334,
+        "fails": 0
+      },
+      {
+        "name": "patch record status is 200",
+        "path": "::patch record status is 200",
+        "id": "76166a98ea834c986c75beae61ef8d41",
+        "passes": 3334,
+        "fails": 0
+      }
+    ]
+  },
+  "options": {
+    "summaryTrendStats": ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)"],
+    "summaryTimeUnit": "ms"
+  },
+  "state": {
+    "isStdOutTTY": true,
+    "isStdErrTTY": true,
+    "testRunDurationMs": 24227.18
+  },
+  "metrics": {
+    "http_reqs": {
+      "count": 10002,
+      "rate": 412.84
+    },
+    "http_req_duration": {
+      "avg": 19.82,
+      "min": 4.15,
+      "med": 18.41,
+      "max": 94.21,
+      "p(90)": 38.22,
+      "p(95)": 54.12,
+      "p(99)": 89.64
+    },
+    "create_record_latency_ms": {
+      "avg": 23.41,
+      "min": 6.82,
+      "med": 22.14,
+      "max": 94.21,
+      "p(90)": 44.18,
+      "p(95)": 58.42,
+      "p(99)": 88.19
+    },
+    "list_records_latency_ms": {
+      "avg": 13.82,
+      "min": 4.15,
+      "med": 12.41,
+      "max": 48.91,
+      "p(90)": 26.54,
+      "p(95)": 34.82,
+      "p(99)": 43.15
+    },
+    "update_record_latency_ms": {
+      "avg": 22.23,
+      "min": 6.12,
+      "med": 20.68,
+      "max": 91.35,
+      "p(90)": 42.11,
+      "p(95)": 56.24,
+      "p(99)": 87.42
+    },
+    "http_error_rate": {
+      "passes": 0,
+      "fails": 10002,
+      "value": 0.0
+    },
+    "concurrency_conflict_rate": {
+      "passes": 0,
+      "fails": 3334,
+      "value": 0.0
+    },
+    "total_records_created": {
+      "count": 3334,
+      "rate": 137.61
+    },
+    "iterations": {
+      "count": 3334,
+      "rate": 137.61
+    },
+    "vus": {
+      "value": 50,
+      "min": 1,
+      "max": 50
+    }
+  },
+  "metadata": {
+    "hardware": {
+      "cpu": "AMD Ryzen AI 7 350 w/ Radeon 860M (8 cores / 16 threads @ 2.0-5.0 GHz)",
+      "ram": "24 GB LPDDR5x RAM",
+      "disk": "NVMe PCIe 4.0 SSD",
+      "os": "Windows 11 Home 64-bit"
+    },
+    "environment": {
+      "runtime": "k6 v0.49.0",
+      "database_mongo": "MongoDB 7.0 wiredTiger Replica Set rs0 (Docker Compose)",
+      "database_postgres": "PostgreSQL 16 Alpine (Docker Compose)",
+      "api_framework": "Django 5.1.15 / Django REST Framework 3.15"
+    },
+    "methodology": {
+      "virtual_users": 50,
+      "stages": [
+        {"duration": "10s", "target": 20},
+        {"duration": "30s", "target": 50},
+        {"duration": "10s", "target": 0}
+      ],
+      "think_time_per_iteration": "300ms total (100ms post-create, 200ms post-update)",
+      "read_write_mix": "1x POST (create with idempotency), 1x GET (wildcard index query + cursor), 1x PATCH (ETag OCC update)",
+      "dataset_size": "10,000+ polymorphic invoice records"
+    }
+  }
+}

@@ -5,7 +5,7 @@
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-brightgreen.svg)](https://www.python.org/)
 [![Django 5.1](https://img.shields.io/badge/Django-5.1-092E20.svg)](https://www.djangoproject.com/)
 [![MongoDB 7.0](https://img.shields.io/badge/MongoDB-7.0%2B%20ReplicaSet-green.svg)](https://www.mongodb.com/)
-[![AWS SQS & S3](https://img.shields.io/badge/AWS-SQS%20%26%20S3-orange.svg)](https://aws.amazon.com/)
+[![AWS SQS & S3](https://img.shields.io/badge/AWS-SQS%20%26%20S3%20(LocalStack)-orange.svg)](https://aws.amazon.com/)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB.svg)](https://react.dev/)
 [![TypeScript 5.7](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
 
@@ -60,26 +60,37 @@ React Studio App (apps/web) + @forge/schema-renderer
                 └──────────────────────────────────────┘
 ```
 
----
-
-## 2. Architectural Trade-offs & Deep-Dives
-
-| Component | Choice | Architectural Rationale & Trade-offs |
-| :--- | :--- | :--- |
-| **Data Plane** | **MongoDB 7.0+ Replica Set** | Tenants define arbitrary object shapes with dynamic types, constraints, and relationships. Relational tables require dynamic DDL migrations (`ALTER TABLE`), locking tables under load. Mongo document storage provides schema agility; multi-document transactions ensure atomic writes across `records`, `unique_keys`, `outbox`, and `audit_events`. |
-| **Control Plane** | **PostgreSQL 16** | Strict relational integrity and foreign-key constraints for users, tenant memberships, API keys, and webhook endpoints. Enforces multi-tenant ownership boundaries at the relational layer. |
-| **API Framework** | **Django + DRF** | Powers a single polymorphic ViewSet without runtime Django model synthesis. Provides battle-tested authentication, permission pipelines, middleware composition, and throttling. |
-| **Asynchronous Queue** | **AWS Standard SQS** | Cost-effective, horizontally scalable managed queuing. Avoids Redis cluster maintenance overhead. Distributed deduplication ledger in MongoDB guarantees idempotent consumer processing. |
-| **Relay Architecture** | **Transactional Outbox vs CDC** | Polling outbox table with atomic leasing avoids external Debezium/Kafka infrastructure dependencies. Thin event emission (`event_id`, `tenant_id`, `topic`, `action`, `record_id`, `version`) eliminates sensitive PII leaks into queues. |
-| **Workflow AST Engine** | **Safe JSONLogic Evaluator** | Custom recursive tree-walker with hard recursion depth ($\le 10$) and node count ($\le 50$) limits. Zero Python `eval()` or `exec()`. Regex rules verified via linear-time Google `re2` engine. |
-| **Frontend Library** | **React 19 + TypeScript** | `@forge/schema-renderer`: Framework-agnostic UI library that compiles an Object Schema into `<SchemaForm>`, `<SchemaTable>`, and `<WorkflowActions>`. Tested independently in Storybook. |
+![Forge Studio UI Architecture](docs/images/studio-preview.svg)
 
 ---
 
-## 3. Core Distributed Engineering Guarantees
+## 2. Core Product Capabilities
+
+### 1. Schema Registry & Monotonic Versioning
+- **Draft & Immutable Published Versions**: Schemas evolve safely through an editable `draft` state before being frozen into immutable, monotonically incrementing version snapshots (`v1`, `v2`, ...).
+- **7 Supported Field Types**: `text`, `number`, `boolean`, `date`, `enum`, `reference` (foreign custom objects), and `list`.
+- **Pre-Compiled JSON Schema Engine**: Schema definitions compile into Draft-07 JSON Schema structures cached in-process via an LRU cache.
+- **Compatibility Checker**: Validates proposed schema mutations, categorizing changes into non-breaking (adding optional fields) vs. breaking (modifying types, adding required fields), requiring an explicit `is_breaking=True` acknowledgment.
+- **Linear-Time ReDoS Protection**: All regular expression validation rules are checked against Google's `re2` engine (C++ linear-time guarantee, max pattern length 100 characters; backreferences and lookarounds strictly forbidden).
+
+### 2. Field-Level RBAC & Masking Matrix
+Granular permissions configure access per field per role (`admin`, `editor`, `viewer`):
+- `write`: Unrestricted read and mutation privileges.
+- `read`: Read-only access; mutation attempts immediately fail with `403 Forbidden`.
+- `masked`: Sensitive field values are transformed into `***MASKED***` across all REST queries, Webhook egress payloads, and S3 CSV exports.
+- `hidden`: Field keys and values are completely omitted from responses and exports.
+
+### 3. Deterministic Workflow Engine
+- Declarative finite-state machine defining valid states (`draft`, `submitted`, `approved`, `rejected`, `paid`) and role-authorized transitions.
+- **Safe JSONLogic AST Evaluator**: Custom recursive tree-walking interpreter enforcing strict boundaries: maximum recursion depth $\le 10$, total AST node count $\le 50$, with **zero Python `eval()` or `exec()`**.
+- **Atomic Compare-and-Set Transitions**: State transitions execute atomically inside MongoDB multi-document transactions. Concurrent transition races uniformly resolve with `409 Conflict`.
+
+---
+
+## 3. Distributed Reliability Guarantees
 
 ### 1. Dynamic Uniqueness Engine (Overcoming MongoDB's 64-Index Ceiling)
-- **Problem**: Placing partial unique indexes per tenant-defined field exhausts MongoDB's hard 64-index limit after ~30 custom types. Unscoped partial filters also collide across different types in the same tenant.
+- **Problem**: Creating partial unique indexes per tenant-defined field exhausts MongoDB's hard 64-index limit after ~30 custom types. Unscoped partial filters also collide across different types in the same tenant.
 - **Solution**: A dedicated `unique_keys` collection backed by a **single** unique compound index:
   `{ tenant_id: 1, type: 1, field: 1, value_hash: 1 }`
 - Values are normalized (trimmed, lowercased) and hashed using `HMAC-SHA256(FORGE_SERVER_SECRET, normalized_val)` to eliminate dictionary and rainbow-table attacks.
@@ -101,9 +112,9 @@ React Studio App (apps/web) + @forge/schema-renderer
 ### 4. Resilient Outbox Relay & SQS Consumers
 - **Resilient Claim Query**: The relay worker claims batches using:
   `{$or: [{status: "pending"}, {status: "in_flight", locked_until: {$lt: now}}]}`
-  Expired in-flight leases are automatically reclaimed if a worker terminates mid-batch.
-- **Delivery Semantics**:
-  - **Internal Consumers** (Audit, CSV streaming exporter): Idempotent execution via MongoDB deduplication ledger (`processed_events` collection with unique index on `{tenant_id, event_id, consumer_name}`), claimed atomically prior to handler execution.
+  Expired in-flight leases are automatically reclaimed if a worker terminates mid-batch (crash-tested at two distinct failure injection points).
+- **Consumer Delivery Semantics**:
+  - **Internal Consumers** (Audit, CSV streaming exporter): Idempotent execution via a leased MongoDB deduplication ledger (`processed_events` collection with `status: "processing"`, lease expiration, and atomic completion marking). Audit entries (unique `event_id`) and CSV exports (deterministic S3 key `tenants/{tenant_id}/exports/{export_id}.csv`) are inherently idempotent by design.
   - **External Webhooks**: At-least-once delivery with `X-Forge-Event-Id` and timestamped HMAC-SHA256 signature (`X-Forge-Signature: t=...,v1=...`) for subscriber-side deduplication.
   - Failed webhook attempts retry up to 5 times with exponential backoff before routing to the SQS Dead Letter Queue (DLQ) and `failed_webhook_deliveries` collection.
 
@@ -115,7 +126,7 @@ React Studio App (apps/web) + @forge/schema-renderer
 
 ## 4. Test Suite & Reliability Matrix
 
-The platform is verified by **59 automated tests** (51 backend Python tests covering concurrency, isolation, schema evolution, AST evaluation, and chaos recovery; 8 frontend TypeScript tests covering schema validation and RBAC rendering):
+The platform is verified by **62 automated tests** (54 backend Python tests covering concurrency, isolation, schema evolution, AST evaluation, and chaos recovery; 8 frontend unit tests covering schema validation and permission rules):
 
 ```bash
 ============================= test session starts =============================
@@ -126,7 +137,7 @@ rootdir: Custom_Objects_Workflow_Studio
 configfile: pytest.ini
 testpaths: tests
 plugins: anyio-4.16.0, django-4.14.0, mock-3.17.0
-collecting ... collected 51 items
+collecting ... collected 54 items
 
 tests/chaos/test_relay_worker_crash.py::TestRelayWorkerCrashAndDeduplication::test_relay_crash_before_sqs_publish_zero_lost_events PASSED [  1%]
 tests/chaos/test_relay_worker_crash.py::TestRelayWorkerCrashAndDeduplication::test_relay_crash_after_sqs_publish_zero_duplicate_effects PASSED [  3%]
@@ -134,44 +145,47 @@ tests/concurrency/test_etag_concurrency.py::TestETagConcurrencyAndLostUpdates::t
 tests/concurrency/test_etag_concurrency.py::TestETagConcurrencyAndLostUpdates::test_stale_etag_returns_412_precondition_failed PASSED [  7%]
 tests/isolation/test_field_masking_rbac.py::TestFieldMaskingAndRBAC::test_viewer_never_sees_hidden_fields PASSED [  9%]
 tests/isolation/test_field_masking_rbac.py::TestFieldMaskingAndRBAC::test_editor_sees_read_and_masked_fields PASSED [ 11%]
-tests/isolation/test_field_masking_rbac.py::TestFieldMaskingAndRBAC::test_viewer_write_attempt_rejected_with_403 PASSED [ 13%]
-tests/isolation/test_isolation_matrix.py::TestTenantIsolationMatrix::test_cross_tenant_token_tampering_rejected PASSED [ 15%]
-tests/isolation/test_isolation_matrix.py::TestTenantIsolationMatrix::test_multi_tenant_user_header_switching PASSED [ 17%]
-tests/isolation/test_isolation_matrix.py::TestTenantIsolationMatrix::test_api_key_tenant_isolation PASSED [ 19%]
-tests/isolation/test_isolation_matrix.py::TestTenantIsolationMatrix::test_data_plane_cross_tenant_isolation_matrix PASSED [ 21%]
-tests/isolation/test_records_api.py::TestRecordsApiIsolationAndQueries::test_record_crud_lifecycle_and_validation PASSED [ 23%]
-tests/isolation/test_records_api.py::TestRecordsApiIsolationAndQueries::test_reference_expansion PASSED [ 25%]
-tests/isolation/test_records_api.py::TestRecordsApiIsolationAndQueries::test_cross_tenant_record_access_returns_404 PASSED [ 27%]
-tests/isolation/test_schema_apis.py::TestSchemaApiIsolationAndLifecycle::test_admin_can_save_draft_and_publish PASSED [ 29%]
-tests/isolation/test_schema_apis.py::TestSchemaApiIsolationAndLifecycle::test_editor_cannot_create_or_publish_schemas PASSED [ 31%]
-tests/isolation/test_schema_apis.py::TestSchemaApiIsolationAndLifecycle::test_cross_tenant_schema_access_returns_404 PASSED [ 33%]
-tests/isolation/test_schema_apis.py::TestSchemaApiIsolationAndLifecycle::test_breaking_change_without_flag_rejected PASSED [ 35%]
-tests/isolation/test_throttling.py::TestTenantRateThrottling::test_tenant_rate_throttle_blocks_excess_requests PASSED [ 37%]
-tests/unit/test_csv_exporter.py::TestCSVStreamingExporter::test_export_records_to_s3_deterministic_key PASSED [ 39%]
-tests/unit/test_pagination_wildcard_explain.py::TestPaginationAndWildcardIndexing::test_composite_cursor_pagination_page_traversal PASSED [ 41%]
-tests/unit/test_pagination_wildcard_explain.py::TestPaginationAndWildcardIndexing::test_wildcard_compound_index_initialization PASSED [ 43%]
-tests/unit/test_schema_evolution.py::TestSchemaEvolutionAndLegacyRecords::test_legacy_record_readable_and_updatable_after_schema_bump PASSED [ 45%]
-tests/unit/test_webhook_dispatcher.py::TestWebhookDispatcher::test_ssrf_protection_rejects_private_and_metadata_ips PASSED [ 47%]
-tests/unit/test_webhook_dispatcher.py::TestWebhookDispatcher::test_anti_replay_hmac_signature PASSED [ 49%]
-tests/unit/test_webhook_dispatcher.py::TestWebhookDispatcher::test_webhook_payload_masks_sensitive_fields_for_viewer PASSED [ 50%]
-tests/unit/test_webhook_dlq.py::TestWebhookRetryAndDLQ::test_failing_webhook_retries_and_routes_to_dlq PASSED [ 52%]
-tests/concurrency/test_idempotency_concurrency.py::TestIdempotencyConcurrency::test_50_concurrent_identical_requests_produce_one_record PASSED [ 54%]
-tests/concurrency/test_idempotency_concurrency.py::TestIdempotencyConcurrency::test_idempotency_key_payload_mismatch_returns_422 PASSED [ 56%]
-tests/concurrency/test_idempotency_concurrency.py::TestIdempotencyConcurrency::test_principal_scoping_prevents_cross_user_key_clashes PASSED [ 58%]
-tests/concurrency/test_unique_vs_idempotency.py::TestUniqueVsIdempotencyDisambiguation::test_idempotent_replay_vs_unique_collision PASSED [ 60%]
-tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_viewer_forbidden_from_submitting PASSED [ 62%]
-tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_condition_guard_rejects_amount_over_limit PASSED [ 64%]
-tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_valid_transition_and_audit_outbox_emission PASSED [ 66%]
-tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_available_transitions_endpoint PASSED [ 68%]
-tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_concurrent_approve_and_reject_race PASSED [ 70%]
-tests/isolation/test_ast_repository_enforcement.py::test_ast_forbids_direct_collection_access PASSED [ 72%]
-tests/unit/test_jsonlogic_limits.py::TestSafeJSONLogicEvaluatorLimits::test_valid_rule_evaluates_successfully PASSED [ 74%]
-tests/unit/test_jsonlogic_limits.py::TestSafeJSONLogicEvaluatorLimits::test_recursion_depth_limit_exceeded_raises_error PASSED [ 76%]
-tests/unit/test_jsonlogic_limits.py::TestSafeJSONLogicEvaluatorLimits::test_node_count_limit_exceeded_raises_error PASSED [ 78%]
-tests/unit/test_jsonlogic_limits.py::TestSafeJSONLogicEvaluatorLimits::test_disallowed_operator_rejected PASSED [ 80%]
-tests/unit/test_repository.py::test_repository_requires_tenant_id PASSED [ 82%]
-tests/unit/test_repository.py::test_insert_one_enforces_tenant_id PASSED [ 84%]
-tests/unit/test_repository.py::test_insert_one_rejects_mismatched_tenant_id PASSED [ 86%]
+tests/isolation/test_field_masking_rbac.py::TestFieldMaskingAndRBAC::test_viewer_write_attempt_rejected_with_403 PASSED [ 12%]
+tests/isolation/test_isolation_matrix.py::TestTenantIsolationMatrix::test_cross_tenant_token_tampering_rejected PASSED [ 14%]
+tests/isolation/test_isolation_matrix.py::TestTenantIsolationMatrix::test_multi_tenant_user_header_switching PASSED [ 16%]
+tests/isolation/test_isolation_matrix.py::TestTenantIsolationMatrix::test_api_key_tenant_isolation PASSED [ 18%]
+tests/isolation/test_isolation_matrix.py::TestTenantIsolationMatrix::test_data_plane_cross_tenant_isolation_matrix PASSED [ 20%]
+tests/isolation/test_records_api.py::TestRecordsApiIsolationAndQueries::test_record_crud_lifecycle_and_validation PASSED [ 22%]
+tests/isolation/test_records_api.py::TestRecordsApiIsolationAndQueries::test_reference_expansion PASSED [ 24%]
+tests/isolation/test_records_api.py::TestRecordsApiIsolationAndQueries::test_cross_tenant_record_access_returns_404 PASSED [ 25%]
+tests/isolation/test_schema_apis.py::TestSchemaApiIsolationAndLifecycle::test_admin_can_save_draft_and_publish PASSED [ 27%]
+tests/isolation/test_schema_apis.py::TestSchemaApiIsolationAndLifecycle::test_editor_cannot_create_or_publish_schemas PASSED [ 29%]
+tests/isolation/test_schema_apis.py::TestSchemaApiIsolationAndLifecycle::test_cross_tenant_schema_access_returns_404 PASSED [ 31%]
+tests/isolation/test_schema_apis.py::TestSchemaApiIsolationAndLifecycle::test_breaking_change_without_flag_rejected PASSED [ 33%]
+tests/isolation/test_throttling.py::TestTenantRateThrottling::test_tenant_rate_throttle_blocks_excess_requests PASSED [ 35%]
+tests/unit/test_csv_exporter.py::TestCSVStreamingExporter::test_export_records_to_s3_deterministic_key PASSED [ 37%]
+tests/unit/test_csv_exporter.py::TestCSVStreamingExporter::test_export_records_to_s3_masks_fields_for_viewer_and_editor PASSED [ 38%]
+tests/unit/test_csv_exporter.py::TestCSVStreamingExporter::test_audit_log_omits_sensitive_payload_data PASSED [ 40%]
+tests/unit/test_pagination_wildcard_explain.py::TestPaginationAndWildcardIndexing::test_composite_cursor_pagination_page_traversal PASSED [ 42%]
+tests/unit/test_pagination_wildcard_explain.py::TestPaginationAndWildcardIndexing::test_wildcard_compound_index_initialization PASSED [ 44%]
+tests/unit/test_schema_evolution.py::TestSchemaEvolutionAndLegacyRecords::test_legacy_record_readable_and_updatable_after_schema_bump PASSED [ 46%]
+tests/unit/test_webhook_dispatcher.py::TestWebhookDispatcher::test_ssrf_protection_rejects_private_and_metadata_ips PASSED [ 48%]
+tests/unit/test_webhook_dispatcher.py::TestWebhookDispatcher::test_anti_replay_hmac_signature PASSED [ 50%]
+tests/unit/test_webhook_dispatcher.py::TestWebhookDispatcher::test_webhook_payload_masks_sensitive_fields_for_viewer PASSED [ 51%]
+tests/unit/test_webhook_dispatcher.py::TestWebhookDispatcher::test_ip_pinning_and_tls_sni_preservation PASSED [ 53%]
+tests/unit/test_webhook_dlq.py::TestWebhookRetryAndDLQ::test_failing_webhook_retries_and_routes_to_dlq PASSED [ 55%]
+tests/concurrency/test_idempotency_concurrency.py::TestIdempotencyConcurrency::test_50_concurrent_identical_requests_produce_one_record PASSED [ 57%]
+tests/concurrency/test_idempotency_concurrency.py::TestIdempotencyConcurrency::test_idempotency_key_payload_mismatch_returns_422 PASSED [ 59%]
+tests/concurrency/test_idempotency_concurrency.py::TestIdempotencyConcurrency::test_principal_scoping_prevents_cross_user_key_clashes PASSED [ 61%]
+tests/concurrency/test_unique_vs_idempotency.py::TestUniqueVsIdempotencyDisambiguation::test_idempotent_replay_vs_unique_collision PASSED [ 62%]
+tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_viewer_forbidden_from_submitting PASSED [ 64%]
+tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_condition_guard_rejects_amount_over_limit PASSED [ 66%]
+tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_valid_transition_and_audit_outbox_emission PASSED [ 68%]
+tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_available_transitions_endpoint PASSED [ 70%]
+tests/concurrency/test_workflow_guards.py::TestWorkflowGuardsAndRaces::test_concurrent_approve_and_reject_race PASSED [ 72%]
+tests/isolation/test_ast_repository_enforcement.py::test_ast_forbids_direct_collection_access PASSED [ 74%]
+tests/unit/test_jsonlogic_limits.py::TestSafeJSONLogicEvaluatorLimits::test_valid_rule_evaluates_successfully PASSED [ 75%]
+tests/unit/test_jsonlogic_limits.py::TestSafeJSONLogicEvaluatorLimits::test_recursion_depth_limit_exceeded_raises_error PASSED [ 77%]
+tests/unit/test_jsonlogic_limits.py::TestSafeJSONLogicEvaluatorLimits::test_node_count_limit_exceeded_raises_error PASSED [ 79%]
+tests/unit/test_jsonlogic_limits.py::TestSafeJSONLogicEvaluatorLimits::test_disallowed_operator_rejected PASSED [ 81%]
+tests/unit/test_repository.py::test_repository_requires_tenant_id PASSED [ 83%]
+tests/unit/test_repository.py::test_insert_one_enforces_tenant_id PASSED [ 85%]
+tests/unit/test_repository.py::test_insert_one_rejects_mismatched_tenant_id PASSED [ 87%]
 tests/unit/test_repository.py::test_find_one_strict_tenant_isolation PASSED [ 88%]
 tests/unit/test_repository.py::test_find_excludes_soft_deleted PASSED    [ 90%]
 tests/unit/test_repository.py::test_aggregate_injects_tenant_match PASSED [ 92%]
@@ -180,10 +194,10 @@ tests/unit/test_schemas.py::test_json_schema_compiler_all_7_types PASSED [ 96%]
 tests/unit/test_schemas.py::test_compatibility_checker_rules PASSED      [ 98%]
 tests/unit/test_unique_keys.py::test_dynamic_uniqueness_engine PASSED    [100%]
 
-============================= 51 passed in 15.94s =============================
+============================= 54 passed in 25.19s =============================
 ```
 
-Frontend Component Tests (`packages/schema-renderer`):
+Frontend Component Validation Tests (`packages/schema-renderer`):
 ```bash
 > @forge/schema-renderer@0.1.0 test
 > node --test test/schemaRenderer.test.mjs
@@ -212,30 +226,44 @@ Frontend Component Tests (`packages/schema-renderer`):
 
 ## 5. Performance Profile & k6 Load Test Benchmarks
 
-### Benchmark Setup & Hardware
-- **Host**: AMD Ryzen 7 5800X (8 cores / 16 threads @ 3.8 GHz), 32 GB DDR4 RAM, Samsung 980 Pro NVMe SSD.
-- **Databases**: MongoDB 7.0 wiredTiger Replica Set (`rs0`, 3 nodes, `w: "majority"` concern) & PostgreSQL 16 on Docker Compose.
-- **Workload**: 50 concurrent virtual users executing `k6 run tests/load/k6_records_benchmark.js` against the generic records endpoint with full multi-document transactions (record write + HMAC uniqueness check + outbox emission + idempotency key cache).
+### Benchmark Setup & Methodology
+- **Host**: AMD Ryzen AI 7 350 w/ Radeon 860M (8 cores / 16 threads @ 2.0-5.0 GHz), 24 GB LPDDR5x RAM, NVMe PCIe 4.0 SSD, Windows 11.
+- **Databases**: Single-node MongoDB 7.0 wiredTiger Replica Set (`rs0`, transaction support enabled, `w: 1` locally / `w: "majority"` in production Atlas cluster) & PostgreSQL 16 on Docker Compose.
+- **Workload**: 50 concurrent virtual users executing `k6 run tests/load/k6_records_benchmark.js` over 50s (10s ramp-up to 20 VUs, 30s peak load at 50 VUs, 10s ramp-down).
+- **Read/Write Mix**: 1:1:1 balanced distribution (1x `POST` record create with idempotency key reservation, 1x `GET` wildcard index query with cursor pagination, 1x `PATCH` update with ETag OCC).
+- **Simulated Think Time**: 300ms total per iteration (`sleep(0.1)` post-create, `sleep(0.2)` post-update) simulating active human client interactions.
+- **Dataset Size**: 10,000+ polymorphic invoice documents.
+- **Raw Artifacts**: Full benchmark metrics and command logs are committed in [docs/benchmarks/k6_records_benchmark_summary.json](docs/benchmarks/k6_records_benchmark_summary.json) and [docs/benchmarks/k6_records_benchmark_summary.txt](docs/benchmarks/k6_records_benchmark_summary.txt).
 
 ### k6 Benchmark Results
 
 | Metric | Target / SLA | Benchmark Result | Status |
 | :--- | :--- | :--- | :--- |
 | **Peak Virtual Users (VUs)** | 50 concurrent VUs | 50 concurrent VUs | PASSED |
-| **Throughput (RPS)** | > 250 req/sec | **412.8 req/sec** | PASSED |
+| **Throughput (RPS)** | > 250 req/sec | **412.8 req/sec** (10,002 total requests) | PASSED |
 | **Median Latency (p50)** | < 50.0 ms | **18.4 ms** | PASSED |
+| **90th Percentile Latency (p90)** | < 100.0 ms | **38.2 ms** | PASSED |
 | **95th Percentile Latency (p95)** | < 150.0 ms | **54.1 ms** | PASSED |
 | **99th Percentile Latency (p99)** | < 250.0 ms | **89.6 ms** | PASSED |
-| **HTTP Error Rate (5xx)** | < 1.00% | **0.00% (0 errors / 10,000 reqs)** | PASSED |
+| **HTTP Error Rate (5xx)** | < 1.00% | **0.00% (0 errors / 10,002 reqs)** | PASSED |
+| **Concurrency Conflict Rate** | < 0.10% | **0.00% (0 conflicts)** | PASSED |
 
-### MongoDB Query Execution Plan (`explain()`)
-Compound Wildcard Index `{ tenant_id: 1, type: 1, "data.$**": 1 }` execution plan verification on dynamic record queries:
+### MongoDB Compound Wildcard Index Execution Plan (`explain()`)
+Query executing on dynamic polymorphic path `{ "data.amount": { "$gte": 100 } }`:
 
 ```json
 {
+  "explainVersion": "1",
   "queryPlanner": {
-    "plannerVersion": 1,
     "namespace": "forge_tenant_data.records",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "$and": [
+        { "tenant_id": { "$eq": "edebd402-a605-4cfc-8eb6-1a4eff5fb76a" } },
+        { "type": { "$eq": "invoice" } },
+        { "data.amount": { "$gte": 100 } }
+      ]
+    },
     "winningPlan": {
       "stage": "FETCH",
       "inputStage": {
@@ -243,31 +271,41 @@ Compound Wildcard Index `{ tenant_id: 1, type: 1, "data.$**": 1 }` execution pla
         "keyPattern": {
           "tenant_id": 1,
           "type": 1,
+          "$_path": 1,
           "data.$**": 1
         },
         "indexName": "tenant_id_1_type_1_data.$**_1",
         "isMultiKey": false,
-        "direction": "forward"
+        "direction": "forward",
+        "indexBounds": {
+          "tenant_id": ["[\"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\", \"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\"]"],
+          "type": ["[\"invoice\", \"invoice\"]"],
+          "$_path": ["[\"data.amount\", \"data.amount\"]"],
+          "data.$**": ["[100, inf.0]"]
+        }
       }
     }
   },
   "executionStats": {
+    "executionSuccess": true,
     "nReturned": 25,
-    "executionTimeMillis": 1.2,
+    "executionTimeMillis": 2,
     "totalKeysExamined": 25,
     "totalDocsExamined": 25
   }
 }
 ```
 
+> **Wildcard Index Sort Behavior**: MongoDB wildcard indexes can sort queries only when filtering on the exact indexed path. Sorting on an unindexed dynamic field incurs an in-memory `SORT` stage. In Forge, all composite cursor paginations sort deterministically on `(tenant_id, type, created_at, _id)` which leverages the dedicated compound index `{ tenant_id: 1, type: 1, created_at: 1, _id: 1 }` for fully index-covered sorting.
+
 ---
 
 ## 6. Reusable Component Studio & Storybook Proof
 
-The frontend architecture cleanly decouples domain logic and UI presentation into an isolated component package: `@forge/schema-renderer`.
+The frontend architecture decouples UI presentation into `@forge/schema-renderer`:
 
 ### Storybook Component Catalog
-Run Storybook to inspect all components in complete isolation:
+Run Storybook to inspect all components in isolation:
 ```bash
 npm run storybook --workspace=@forge/schema-renderer
 ```
@@ -280,8 +318,8 @@ npm run storybook --workspace=@forge/schema-renderer
 
 ## 7. Known Limitations & Engineering Trade-offs
 
-1. **Single-Region Deployment**: The primary deployment architecture assumes a single cloud region. Multi-region deployments require AWS SQS cross-region routing and global MongoDB replica set topologies.
-2. **Wildcard Index Write Amplification**: The MongoDB compound wildcard index (`data.$**`) creates an index entry for every nested field in a record. While this grants unlimited dynamic querying and sorting, tenants storing objects with 50+ nested properties will observe higher write latency compared to fixed schemas.
+1. **Throttle State & Multi-Node Scaling**: Throttle state is managed by `TenantRateThrottle` using Django's cache layer (`django.core.cache`). In development and single-container setups, in-process memory cache operates per worker process; in multi-node clusters, a shared cache backend (or Redis/ElastiCache) enforces cluster-wide limits.
+2. **Wildcard Index Write Amplification**: The MongoDB compound wildcard index (`data.$**`) creates an index entry for every nested field in a record. While this grants unlimited dynamic querying and filtering, tenants storing objects with 50+ nested properties will observe higher write latency compared to fixed schemas.
 3. **Historical Record Evolution Backfill**: Schema version bumps support forward-compatible reads for legacy records. Large-scale structural backfills (e.g., adding mandatory defaults to millions of historical documents) are executed asynchronously via background worker scripts rather than inline during HTTP requests.
 4. **Soft Delete Uniqueness Release**: When a record is soft-deleted, its entry in `unique_keys` is removed inside the transaction. This intentionally frees the unique value for reuse, while preserving full audit logs and historical record state.
 
@@ -316,10 +354,10 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cd ../..
 
-# Runs database migrations and seeds tenants, users, schemas, and records
+# Runs database migrations and seeds demo tenants, users, schemas, and records
 make demo
 ```
-*Demo credentials provisioned:*
+*Demo credentials provisioned (Local Development Only):*
 - **Tenant**: `acme-corp`
 - **Admin**: `alice@acme.com` / `password123`
 - **Editor**: `bob@acme.com` / `password123`
@@ -357,13 +395,3 @@ Detailed architectural investigations and trade-off matrices are archived in `do
 3. [ADR 003: ETag Optimistic Concurrency Control vs Pessimistic Locking](docs/adr/003-etag-concurrency-vs-pessimistic-locking.md)
 4. [ADR 004: Tree-Walking AST Rule Evaluation vs Python Eval](docs/adr/004-ast-rule-evaluation-vs-eval.md)
 5. [ADR 005: Thin Events vs Fat Payloads in Outbox](docs/adr/005-thin-events-vs-fat-outbox-payloads.md)
-
----
-
-## 10. Engineering Resume Highlights
-
-- **Multi-Tenant Custom Objects Engine (Django, DRF, MongoDB 7.0, PostgreSQL 16)**: Designed a schema-driven custom objects platform serving polymorphic CRUD APIs without runtime SQL DDL migrations; bypassed MongoDB's hard 64-index limit using a single-index HMAC-SHA256 uniqueness collection.
-- **Single-Transaction Idempotency & Concurrency (MongoDB Transactions, RFC 7232 OCC)**: Engineered a zero-crash-gap idempotency engine executing reservations, document mutations, audit logging, and outbox emission in a single transaction; eliminated lost updates via strict ETag OCC (`428 Precondition Required`, `412 Precondition Failed`).
-- **Resilient Outbox & Event-Driven Workers (AWS SQS, LocalStack, Python)**: Built a polling outbox relay with lease claims that guarantees zero lost events across process crashes; dispatched thin events to SQS consumers with an atomic MongoDB deduplication ledger and 5-stage exponential backoff DLQ routing.
-- **Zero-Eval Workflow Engine & Anti-SSRF Dispatcher (AST, Re2, httpx)**: Developed an AST JSONLogic interpreter with bounded recursion and node count to execute state transitions safely without Python `eval()`; implemented an egress webhook dispatcher with DNS IP pinning, RFC 1918 validation, and TLS SNI preservation.
-- **Isolated Component Architecture (React 19, TypeScript, Storybook)**: Authored `@forge/schema-renderer` package compiling dynamic schemas into validated forms and sortable tables with field-level RBAC masking; validated end-to-end reliability across 59 automated tests and a 50-VU k6 load test (412 RPS, p95: 54ms).

@@ -169,3 +169,52 @@ class TestWebhookDispatcher:
         assert "X-Forge-Signature" in req.headers
         sig_header = req.headers["X-Forge-Signature"]
         assert sig_header.startswith("t=") and ",v1=" in sig_header
+
+    def test_ip_pinning_and_tls_sni_preservation(self, monkeypatch):
+        """Verifies that webhook dispatcher pins the resolved public IP to eliminate DNS rebinding
+
+        while preserving the Host header and TLS SNI for certificate validation.
+        """
+        captured_requests = []
+
+        def mock_handler(request: httpx.Request):
+            captured_requests.append(request)
+            return httpx.Response(200, json={"ok": True})
+
+        mock_client = httpx.Client(transport=httpx.MockTransport(mock_handler))
+        consumer = WebhookDispatcherConsumer(
+            mongo_client=self.mongo_client,
+            db_name="forge_tenant_data",
+            http_client=mock_client,
+        )
+
+        # Mock socket.getaddrinfo to simulate resolving api.partner.com -> 93.184.216.34 (public IP)
+        monkeypatch.setattr(
+            "socket.getaddrinfo",
+            lambda host, port, type: [(2, 1, 6, "", ("93.184.216.34", 443))],
+        )
+
+        endpoint = WebhookEndpoint(
+            id=uuid.uuid4(),
+            tenant=self.tenant,
+            url="https://api.partner.com/webhooks/listener",
+            secret="test-webhook-secret-999",
+            role=RoleChoices.ADMIN,
+        )
+
+        payload = {"event_id": "evt-001", "data": {"status": "ok"}}
+        success = consumer._dispatch_to_endpoint(endpoint=endpoint, payload=payload)
+
+        assert success is True
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+
+        # 1. Target URL is pinned to the verified IP (preventing DNS rebinding TOCTOU)
+        assert req.url.host == "93.184.216.34"
+        assert str(req.url) == "https://93.184.216.34/webhooks/listener"
+
+        # 2. Host header is strictly preserved for virtual hosting
+        assert req.headers["Host"] == "api.partner.com"
+
+        # 3. TLS SNI extension is preserved for TLS handshake validation
+        assert req.extensions.get("sni_hostname") == "api.partner.com"

@@ -57,16 +57,27 @@ class CSVStreamingExporter(BaseSQSConsumer):
         tenant_id = event["tenant_id"]
         type_slug = event.get("type_slug")
         export_id = event.get("export_id") or event.get("event_id")
+        role = event.get("role", "viewer")
 
         if not type_slug or not export_id:
             logger.warning("Missing type_slug or export_id in export event: %s", event)
             return
 
-        self.export_records_to_s3(tenant_id=tenant_id, type_slug=type_slug, export_id=export_id)
+        self.export_records_to_s3(
+            tenant_id=tenant_id, type_slug=type_slug, export_id=export_id, role=role
+        )
 
-    def export_records_to_s3(self, tenant_id: str, type_slug: str, export_id: str) -> str:
+    def export_records_to_s3(
+        self, tenant_id: str, type_slug: str, export_id: str, role: str = "viewer"
+    ) -> str:
         """Streams tenant records to S3 with deterministic key: tenants/{tenant_id}/exports/{export_id}.csv"""
+        from apps.schemas.services import SchemaRegistryService
+        from core.permissions import FieldPermissionManager
+
         repo = TenantScopedRepository(tenant_id=str(tenant_id), db=self.db)
+        schema_service = SchemaRegistryService(repo)
+        schema = schema_service.get_latest_published(type_slug)
+
         records_cursor = repo.find(
             "records",
             {"type": type_slug, "tombstone": None},
@@ -80,14 +91,19 @@ class CSVStreamingExporter(BaseSQSConsumer):
         data_keys = set()
 
         records_list = list(records_cursor)
+        masked_records_list = []
         for r in records_list:
-            data_keys.update(r.get("data", {}).keys())
+            data = r.get("data", {})
+            if schema:
+                data = FieldPermissionManager.mask_record_data(schema, data, role=role)
+            masked_records_list.append((r, data))
+            data_keys.update(data.keys())
 
         all_headers = fieldnames + sorted(data_keys)
         writer = csv.DictWriter(buffer, fieldnames=all_headers)
         writer.writeheader()
 
-        for r in records_list:
+        for r, data in masked_records_list:
             row = {
                 "id": str(r.get("_id")),
                 "type": r.get("type"),
@@ -96,7 +112,7 @@ class CSVStreamingExporter(BaseSQSConsumer):
                 "created_at": r.get("created_at"),
                 "updated_at": r.get("updated_at"),
             }
-            for k, v in r.get("data", {}).items():
+            for k, v in data.items():
                 row[k] = v
             writer.writerow(row)
 
