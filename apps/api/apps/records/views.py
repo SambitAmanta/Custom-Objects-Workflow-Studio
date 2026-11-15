@@ -5,6 +5,7 @@ from apps.records.services import (
     RecordService,
     UniqueConstraintError,
 )
+from core.idempotency import IdempotencyManager, IdempotencyPayloadMismatchError
 from core.repository import TenantScopedRepository
 from rest_framework import status
 from rest_framework.decorators import api_view
@@ -19,10 +20,14 @@ def _get_service(request) -> RecordService:
     return RecordService(repo)
 
 
+def _get_principal_info(request) -> tuple[str, str]:
+    principal = getattr(request, "auth", None)
+    principal_id = getattr(principal, "id", "anonymous")
+    role = getattr(principal, "role", "viewer")
+    return principal_id, role
+
+
 def _parse_if_match_header(request) -> int:
-    """Parses If-Match header (e.g. W/"1" or "1").
-    Returns integer version. Raises ValueError if missing or invalid.
-    """
     header = request.headers.get("If-Match")
     if not header:
         raise KeyError("If-Match header is required for updates")
@@ -44,22 +49,41 @@ def _serialize_record(record: dict | None) -> dict | None:
 
 @api_view(["GET", "POST"])
 def list_or_create_records(request, type_slug: str):
-    """GET /api/v1/o/{type}/: Filter, sort, and paginate records.
-    POST /api/v1/o/{type}/: Create record validated against published schema.
+    """GET /api/v1/o/{type}/: Filter, sort, and paginate records with field masking.
+    POST /api/v1/o/{type}/: Create record with JSON Schema validation and atomic Idempotency-Key.
     """
     service = _get_service(request)
-    principal_id = getattr(request.auth, "id", "anonymous")
+    principal_id, role = _get_principal_info(request)
 
     if request.method == "POST":
+        idempotency_key = request.headers.get("Idempotency-Key")
+        request_hash = (
+            IdempotencyManager.compute_request_hash(request.method, request.path, request.data)
+            if idempotency_key
+            else None
+        )
+
         try:
-            record = service.create_record(
+            record, is_replayed = service.create_record(
                 type_slug=type_slug,
                 data=request.data,
                 principal_id=principal_id,
+                role=role,
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
             )
             response = Response(_serialize_record(record), status=status.HTTP_201_CREATED)
             response["ETag"] = f'W/"{record.get("version", 1)}"'
+            if is_replayed:
+                response["X-Idempotent-Replay"] = "true"
             return response
+        except IdempotencyPayloadMismatchError as e:
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        except PermissionError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except UniqueConstraintError as e:
@@ -83,6 +107,7 @@ def list_or_create_records(request, type_slug: str):
             sort_dir=sort_dir,
             cursor=cursor,
             limit=limit,
+            role=role,
         )
         return Response(
             {
@@ -98,18 +123,20 @@ def list_or_create_records(request, type_slug: str):
 
 @api_view(["GET", "PATCH", "DELETE"])
 def record_detail(request, type_slug: str, record_id: str):
-    """GET /api/v1/o/{type}/{id}/: Retrieve record with ETag.
-    PATCH /api/v1/o/{type}/{id}/: Partial update with optimistic concurrency (If-Match).
+    """GET /api/v1/o/{type}/{id}/: Retrieve record with ETag and field masking.
+    PATCH /api/v1/o/{type}/{id}/: Partial update with optimistic concurrency (If-Match) and field RBAC.
     DELETE /api/v1/o/{type}/{id}/: Soft-delete record and free unique keys.
     """
     service = _get_service(request)
-    principal_id = getattr(request.auth, "id", "anonymous")
+    principal_id, role = _get_principal_info(request)
 
     if request.method == "GET":
         expand_param = request.query_params.get("expand")
         expand_list = [f.strip() for f in expand_param.split(",")] if expand_param else None
 
-        record = service.get_record(type_slug=type_slug, record_id=record_id, expand=expand_list)
+        record = service.get_record(
+            type_slug=type_slug, record_id=record_id, role=role, expand=expand_list
+        )
         if not record:
             return Response(
                 {"detail": f"Record '{record_id}' not found"}, status=status.HTTP_404_NOT_FOUND
@@ -131,7 +158,7 @@ def record_detail(request, type_slug: str, record_id: str):
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2. Update with Optimistic Concurrency Control
+        # 2. Update with Optimistic Concurrency Control and Field-Level RBAC
         try:
             updated = service.update_record(
                 type_slug=type_slug,
@@ -139,6 +166,7 @@ def record_detail(request, type_slug: str, record_id: str):
                 patch_data=request.data,
                 if_match_version=if_match_version,
                 principal_id=principal_id,
+                role=role,
             )
             if not updated:
                 return Response(
@@ -148,6 +176,8 @@ def record_detail(request, type_slug: str, record_id: str):
             response = Response(_serialize_record(updated), status=status.HTTP_200_OK)
             response["ETag"] = f'W/"{updated.get("version", 1)}"'
             return response
+        except PermissionError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except OptimisticLockError as e:
             return Response(
                 {"detail": str(e)},

@@ -6,6 +6,8 @@ from typing import Any
 import jsonschema
 from apps.schemas.compiler import compile_object_type_to_json_schema
 from apps.schemas.services import SchemaRegistryService
+from core.idempotency import IdempotencyManager
+from core.permissions import FieldPermissionManager
 from core.repository import TenantScopedRepository
 from core.unit_of_work import UnitOfWork
 from django.utils import timezone
@@ -31,6 +33,7 @@ class RecordService:
         self.repo = repo
         self.uow = UnitOfWork(repo)
         self.schema_service = SchemaRegistryService(repo)
+        self.idempotency_manager = IdempotencyManager(repo)
 
     def _get_active_schema(self, type_slug: str) -> dict[str, Any]:
         schema = self.schema_service.get_latest_published(type_slug)
@@ -39,18 +42,37 @@ class RecordService:
         return schema
 
     def create_record(
-        self, type_slug: str, data: dict[str, Any], principal_id: str = "anonymous"
-    ) -> dict[str, Any]:
+        self,
+        type_slug: str,
+        data: dict[str, Any],
+        principal_id: str = "anonymous",
+        role: str = "admin",
+        idempotency_key: str | None = None,
+        request_hash: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Creates record atomically inside the unit-of-work transaction.
+        Returns tuple of (serialized_record, is_replayed).
+        """
+        # 1. Fast-path: Check for cached idempotency response
+        if idempotency_key and request_hash:
+            cached = self.idempotency_manager.get_cached_response(
+                principal_id, idempotency_key, request_hash
+            )
+            if cached:
+                return cached["body"], True
+
         schema = self._get_active_schema(type_slug)
         compiled_schema = compile_object_type_to_json_schema(schema)
 
-        # 1. Validate data against compiled JSON Schema
+        # 2. Field-level write RBAC enforcement
+        FieldPermissionManager.validate_write_permissions(schema, list(data.keys()), role)
+
+        # 3. Validate data against compiled JSON Schema
         try:
             jsonschema.validate(instance=data, schema=compiled_schema)
         except jsonschema.ValidationError as e:
             raise ValueError(f"Schema validation error: {e.message}") from e
 
-        # 2. Extract unique fields and initial workflow state
         fields = schema.get("fields", [])
         unique_fields = [f for f in fields if f.get("unique", False)]
         initial_state = schema.get("workflow", {}).get("initial_state", "draft")
@@ -59,28 +81,51 @@ class RecordService:
         event_id = uuid.uuid4().hex
         now = timezone.now().isoformat()
 
+        # Build clean serialized record with field masking
+        masked_data = FieldPermissionManager.mask_record_data(schema, data, role)
+        response_record = {
+            "id": record_id,
+            "tenant_id": self.repo.tenant_id,
+            "type": type_slug,
+            "schema_version": schema.get("version", 1),
+            "data": masked_data,
+            "state": initial_state,
+            "version": 1,
+            "created_at": now,
+            "updated_at": now,
+        }
+
         def _transaction_work(session):
-            # A. Insert into unique_keys
+            # A. If idempotency key provided, insert idempotency doc inside the transaction
+            if idempotency_key and request_hash:
+                self.idempotency_manager.save_response(
+                    principal_id=principal_id,
+                    key=idempotency_key,
+                    request_hash=request_hash,
+                    status_code=201,
+                    response_headers={"ETag": 'W/"1"'},
+                    response_body=response_record,
+                    session=session,
+                )
+
+            # B. Insert unique_keys
             for uf in unique_fields:
                 field_name = uf["name"]
                 if field_name in data and data[field_name] is not None:
                     val_hash = UnitOfWork.hash_unique_value(data[field_name])
-                    try:
-                        self.repo.insert_one(
-                            UnitOfWork.UNIQUE_KEYS_COLLECTION,
-                            {
-                                "tenant_id": self.repo.tenant_id,
-                                "type": type_slug,
-                                "field": field_name,
-                                "value_hash": val_hash,
-                                "record_id": record_id,
-                            },
-                            session=session,
-                        )
-                    except DuplicateKeyError as exc:
-                        raise UniqueConstraintError(field_name) from exc
+                    self.repo.insert_one(
+                        UnitOfWork.UNIQUE_KEYS_COLLECTION,
+                        {
+                            "tenant_id": self.repo.tenant_id,
+                            "type": type_slug,
+                            "field": field_name,
+                            "value_hash": val_hash,
+                            "record_id": record_id,
+                        },
+                        session=session,
+                    )
 
-            # B. Insert into records
+            # C. Insert record
             record_doc = {
                 "_id": record_id,
                 "tenant_id": self.repo.tenant_id,
@@ -95,7 +140,7 @@ class RecordService:
             }
             self.repo.insert_one(UnitOfWork.RECORDS_COLLECTION, record_doc, session=session)
 
-            # C. In-transaction immutable audit entry
+            # D. In-transaction audit entry
             self.repo.insert_one(
                 UnitOfWork.AUDIT_COLLECTION,
                 {
@@ -112,7 +157,7 @@ class RecordService:
                 session=session,
             )
 
-            # D. Thin Outbox Event
+            # E. Thin Outbox Event
             self.repo.insert_one(
                 UnitOfWork.OUTBOX_COLLECTION,
                 {
@@ -130,12 +175,47 @@ class RecordService:
                 },
                 session=session,
             )
-            return record_doc
+            return response_record
 
-        return self.uow.run_transaction(_transaction_work)
+        # 4. Execute transaction with DuplicateKeyError differentiation outside transaction
+        try:
+            result = self.uow.run_transaction(_transaction_work)
+            return result, False
+        except DuplicateKeyError as e:
+            # 1. Check if idempotency key caused it
+            if idempotency_key:
+                cached = self.idempotency_manager.get_cached_response(
+                    principal_id, idempotency_key, request_hash
+                )
+                if cached:
+                    return cached["body"], True
+
+            # 2. Check which unique field caused it by checking unique_keys
+            for uf in unique_fields:
+                field_name = uf["name"]
+                if field_name in data and data[field_name] is not None:
+                    val_hash = UnitOfWork.hash_unique_value(data[field_name])
+                    existing_key = self.repo.db[UnitOfWork.UNIQUE_KEYS_COLLECTION].find_one(
+                        {
+                            "tenant_id": self.repo.tenant_id,
+                            "type": type_slug,
+                            "field": field_name,
+                            "value_hash": val_hash,
+                        }
+                    )
+                    if existing_key:
+                        raise UniqueConstraintError(field_name) from e
+
+            if unique_fields:
+                raise UniqueConstraintError(unique_fields[0]["name"]) from e
+            raise
 
     def get_record(
-        self, type_slug: str, record_id: str, expand: list[str] = None
+        self,
+        type_slug: str,
+        record_id: str,
+        role: str = "admin",
+        expand: list[str] = None,
     ) -> dict[str, Any] | None:
         record = self.repo.find_one(
             UnitOfWork.RECORDS_COLLECTION,
@@ -144,24 +224,34 @@ class RecordService:
         if not record:
             return None
 
+        schema = self._get_active_schema(type_slug)
+
         # Handle ?expand=<ref_field>
         if expand and "data" in record:
-            schema = self.schema_service.get_latest_published(type_slug)
-            if schema:
-                ref_fields = {
-                    f["name"]: f for f in schema.get("fields", []) if f.get("type") == "reference"
-                }
-                for field_name in expand:
-                    if field_name in ref_fields and field_name in record["data"]:
-                        target_id = record["data"][field_name]
-                        target_type = ref_fields[field_name].get("target_type")
-                        if target_id and target_type:
-                            target_doc = self.repo.find_one(
-                                UnitOfWork.RECORDS_COLLECTION,
-                                {"_id": target_id, "type": target_type},
+            ref_fields = {
+                f["name"]: f for f in schema.get("fields", []) if f.get("type") == "reference"
+            }
+            for field_name in expand:
+                if field_name in ref_fields and field_name in record["data"]:
+                    target_id = record["data"][field_name]
+                    target_type = ref_fields[field_name].get("target_type")
+                    if target_id and target_type:
+                        target_doc = self.repo.find_one(
+                            UnitOfWork.RECORDS_COLLECTION,
+                            {"_id": target_id, "type": target_type},
+                        )
+                        if target_doc:
+                            # Mask target data as well
+                            target_schema = self.schema_service.get_latest_published(target_type)
+                            masked_target = FieldPermissionManager.mask_record_data(
+                                target_schema or {}, target_doc.get("data", {}), role
                             )
-                            if target_doc:
-                                record["data"][f"{field_name}_expanded"] = target_doc.get("data")
+                            record["data"][f"{field_name}_expanded"] = masked_target
+
+        # Apply field-level masking to response data
+        record["data"] = FieldPermissionManager.mask_record_data(
+            schema, record.get("data", {}), role
+        )
         return record
 
     def update_record(
@@ -171,6 +261,7 @@ class RecordService:
         patch_data: dict[str, Any],
         if_match_version: int,
         principal_id: str = "anonymous",
+        role: str = "admin",
     ) -> dict[str, Any]:
         existing = self.repo.find_one(
             UnitOfWork.RECORDS_COLLECTION,
@@ -188,7 +279,10 @@ class RecordService:
         schema = self._get_active_schema(type_slug)
         compiled_schema = compile_object_type_to_json_schema(schema)
 
-        # Merge patch in-memory and validate merged document
+        # 1. Field-level write RBAC enforcement on modified fields
+        FieldPermissionManager.validate_write_permissions(schema, list(patch_data.keys()), role)
+
+        # 2. Merge patch in-memory and validate merged document
         merged_data = {**existing.get("data", {}), **patch_data}
         try:
             jsonschema.validate(instance=merged_data, schema=compiled_schema)
@@ -289,7 +383,12 @@ class RecordService:
             )
             return updated
 
-        return self.uow.run_transaction(_transaction_work)
+        updated_doc = self.uow.run_transaction(_transaction_work)
+        if updated_doc:
+            updated_doc["data"] = FieldPermissionManager.mask_record_data(
+                schema, updated_doc.get("data", {}), role
+            )
+        return updated_doc
 
     def delete_record(
         self,
@@ -379,8 +478,9 @@ class RecordService:
         sort_dir: int = 1,
         cursor: str | None = None,
         limit: int = 50,
+        role: str = "admin",
     ) -> dict[str, Any]:
-        """Lists records with whitelisted filtering and composite cursor pagination."""
+        """Lists records with whitelisted filtering, cursor pagination, and field masking."""
         schema = self._get_active_schema(type_slug)
         declared_fields = {f["name"]: f for f in schema.get("fields", [])}
 
@@ -409,7 +509,11 @@ class RecordService:
                     def _parse_val(v):
                         if f_type == "number":
                             try:
-                                return int(v) if str(v).isdigit() or str(v).lstrip("-").isdigit() else float(v)
+                                return (
+                                    int(v)
+                                    if str(v).isdigit() or str(v).lstrip("-").isdigit()
+                                    else float(v)
+                                )
                             except (ValueError, TypeError):
                                 return v
                         elif f_type == "boolean":
@@ -423,7 +527,9 @@ class RecordService:
                     elif op == "lte":
                         mongo_filter[dot_path] = {"$lte": _parse_val(val)}
                     elif op == "in":
-                        mongo_filter[dot_path] = {"$in": [_parse_val(v.strip()) for v in str(val).split(",") if v.strip()]}
+                        mongo_filter[dot_path] = {
+                            "$in": [_parse_val(v.strip()) for v in str(val).split(",") if v.strip()]
+                        }
 
         # Handle Composite Cursor Pagination (sort_val, _id)
         if cursor:
@@ -444,7 +550,7 @@ class RecordService:
                         {sort_field: cursor_sort_val, "_id": {"$lt": cursor_id}},
                     ]
             except Exception:
-                pass  # invalid cursor ignored
+                pass
 
         query_cursor = (
             self.repo.db[UnitOfWork.RECORDS_COLLECTION]
@@ -469,6 +575,12 @@ class RecordService:
             ).decode("utf-8")
         else:
             next_cursor = None
+
+        # Apply field-level masking to all returned records
+        for item in items:
+            item["data"] = FieldPermissionManager.mask_record_data(
+                schema, item.get("data", {}), role
+            )
 
         return {
             "records": items,
