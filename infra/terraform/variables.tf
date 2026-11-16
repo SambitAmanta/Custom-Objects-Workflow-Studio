@@ -16,3 +16,15 @@ variable "app_name" {
   default     = "forge"
 }
 
+variable "ecr_api_image_url" {
+  description = "ECR Repository URL for Forge API image"
+  type        = string
+  default     = "forge-api"
+}
+
+variable "ecr_workers_image_url" {
+  description = "ECR Repository URL for Forge Workers image"
+  type        = string
+  default     = "forge-workers"
+}
+

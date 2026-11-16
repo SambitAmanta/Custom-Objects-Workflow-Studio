@@ -1,0 +1,114 @@
+name: Deploy to AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment Environment'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - prod
+          - staging
+
+jobs:
+  test:
+    name: Run Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/api/requirements.txt
+
+      - name: Run Backend Tests
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings
+          DJANGO_SECRET_KEY: testing-ci-key-1234567890
+          FORGE_SERVER_SECRET: testing-forge-secret-key-64-chars-0123456789abcdef0123456789abcdef
+          JWT_SECRET_KEY: testing-jwt-secret-key-32-chars-long
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          pytest -v
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Run Frontend Tests
+        run: npm run test
+
+  deploy:
+    name: Build, Push & Deploy to AWS Fargate & S3
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push API image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/forge-api:$IMAGE_TAG -t $ECR_REGISTRY/forge-api:latest -f apps/api/Dockerfile .
+          docker push $ECR_REGISTRY/forge-api:$IMAGE_TAG
+          docker push $ECR_REGISTRY/forge-api:latest
+
+      - name: Build, tag, and push Workers image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/forge-workers:$IMAGE_TAG -t $ECR_REGISTRY/forge-workers:latest -f apps/workers/Dockerfile .
+          docker push $ECR_REGISTRY/forge-workers:$IMAGE_TAG
+          docker push $ECR_REGISTRY/forge-workers:latest
+
+      - name: Deploy API Service to Amazon ECS
+        run: |
+          aws ecs update-service --cluster forge-${{ inputs.environment }}-cluster \
+                                 --service forge-${{ inputs.environment }}-api-service \
+                                 --force-new-deployment
+
+      - name: Deploy Workers Service to Amazon ECS
+        run: |
+          aws ecs update-service --cluster forge-${{ inputs.environment }}-cluster \
+                                 --service forge-${{ inputs.environment }}-workers-service \
+                                 --force-new-deployment
+
+      - name: Build Frontend & Deploy to S3 + Invalidate CloudFront
+        env:
+          VITE_API_URL: ${{ secrets.PROD_API_URL }}
+        run: |
+          npm ci
+          npm run build
+          aws s3 sync apps/web/dist s3://forge-${{ inputs.environment }}-studio-web --delete
+          if [ -n "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" ]; then
+            aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
+          fi

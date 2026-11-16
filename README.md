@@ -408,3 +408,14 @@ Detailed architectural investigations and trade-off matrices are archived in `do
 3. [ADR 003: ETag Optimistic Concurrency Control vs Pessimistic Locking](docs/adr/003-etag-concurrency-vs-pessimistic-locking.md)
 4. [ADR 004: Tree-Walking AST Rule Evaluation vs Python Eval](docs/adr/004-ast-rule-evaluation-vs-eval.md)
 5. [ADR 005: Thin Events vs Fat Payloads in Outbox](docs/adr/005-thin-events-vs-fat-outbox-payloads.md)
+
+---
+
+## 10. Production AWS Deployment
+
+Forge includes production Infrastructure-as-Code (Terraform), multi-stage Dockerfiles, and automated GitHub Actions workflows:
+
+- **Terraform Declarations**: [infra/terraform/](infra/terraform/) (VPC, Subnets, ALB, RDS PostgreSQL 16, ECS Fargate, SQS, S3, CloudFront OAC).
+- **Deployment Guide**: [docs/deployment/aws-deployment-guide.md](docs/deployment/aws-deployment-guide.md) (step-by-step CLI commands, database setups, and runbooks).
+- **CI/CD Workflow**: [.github/workflows/deploy-aws.yml](.github/workflows/deploy-aws.yml) (automated image building, ECR push, ECS service updates, and S3/CloudFront invalidations).
+
