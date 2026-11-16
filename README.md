@@ -234,6 +234,7 @@ Frontend Component Validation Tests (`packages/schema-renderer`):
 - **Read/Write Mix**: 1:1:1 balanced distribution (1x `POST` record create with idempotency key reservation, 1x `GET` wildcard index query with cursor pagination, 1x `PATCH` update with ETag OCC).
 - **Simulated Think Time**: 300ms total per iteration (`sleep(0.1)` post-create, `sleep(0.2)` post-update) simulating active human client interactions.
 - **Dataset Size**: 10,000+ polymorphic invoice documents.
+- **Capacity & Throughput Distinction**: The measured 412.8 req/sec reflects client-paced throughput at 50 VUs with 300 ms simulated think time per iteration (3 requests per iteration: 1x POST, 1x GET, 1x PATCH), not server saturation capacity. With a p95 latency of only 54.1 ms and 0.00% errors, the server was nowhere near saturated; an unthrottled zero-think-time or constant-arrival-rate run would be required to determine ultimate hardware saturation limits.
 - **Benchmark Execution Note**: Load tests were run locally on a single laptop node with `w: 1` write concern (which has lower write latency than distributed `w: majority` writes across multiple cloud replica nodes).
 - **Raw Artifacts**: Full raw k6 summary output and MongoDB execution plans are committed in [docs/benchmarks/k6_records_benchmark_summary.json](docs/benchmarks/k6_records_benchmark_summary.json), [docs/benchmarks/k6_records_benchmark_summary.txt](docs/benchmarks/k6_records_benchmark_summary.txt), and [docs/benchmarks/mongo_wildcard_explain.json](docs/benchmarks/mongo_wildcard_explain.json).
 
@@ -243,16 +244,14 @@ Frontend Component Validation Tests (`packages/schema-renderer`):
 | :--- | :--- | :--- | :--- |
 | **Peak Virtual Users (VUs)** | 50 concurrent VUs | 50 concurrent VUs | — |
 | **Test Duration** | Fixed iteration run | **24.2 seconds** (`0m24.2s`) | — |
-| **Total HTTP Requests** | 10,000 requests | **10,002 http_reqs** (3,334 create, 3,334 list, 3,334 patch) | — |
-| **Paced Throughput** | > 250 req/sec | **412.8 req/sec** (at 50 VUs with 300 ms think time) | PASSED |
+| **Total HTTP Requests** | 10,000 target requests | **10,002 http_reqs** (3,334 create, 3,334 list, 3,334 patch) | — |
+| **Throughput (50 VUs w/ 300ms think time)** | > 250 req/sec | **412.8 req/sec** (412.84/s across 24.2s run) | PASSED |
 | **Median Latency (p50)** | < 50.0 ms | **18.4 ms** | PASSED |
 | **90th Percentile Latency (p90)** | < 100.0 ms | **38.2 ms** | PASSED |
 | **95th Percentile Latency (p95)** | < 150.0 ms | **54.1 ms** | PASSED |
 | **99th Percentile Latency (p99)** | < 250.0 ms | **89.6 ms** | PASSED |
 | **HTTP Error Rate (5xx)** | < 1.00% | **0.00% (0 errors / 10,002 reqs)** | PASSED |
 | **Concurrency Conflict Rate** | < 0.10% | **0.00% (0 conflicts)** | PASSED |
-
-> **Throughput & Capacity Note**: The benchmark throughput of **412.8 req/sec** was governed by the 300 ms simulated client think time across 50 VUs rather than system saturation. With p95 latency at 54.1 ms and zero errors or conflicts, the service operated well within its headroom; measuring true saturation capacity would require a zero-think-time or open-model constant-arrival-rate stress test.
 
 ### MongoDB Compound Wildcard Index Execution Plan (`explain()`)
 Raw execution plan for query executing on dynamic polymorphic path `{ "data.amount": { "$gte": 100 } }`:
@@ -413,12 +412,12 @@ Detailed architectural investigations and trade-off matrices are archived in `do
 
 ---
 
-## 10. AWS Cloud Deployment & Reference Architecture
+## 10. AWS Cloud Architecture & Deployment Specifications
 
-Forge provides deployment specifications, production Infrastructure-as-Code (Terraform), multi-stage Dockerfiles, and automated CI/CD workflows:
+Forge provides complete Infrastructure-as-Code (Terraform), multi-stage Dockerfiles, and automated CI/CD deployment specifications:
 
-- **Enterprise Reference Architecture (Not Deployed)**: [infra/terraform/](infra/terraform/) (Multi-AZ VPC, ALB with `/healthz/` probe, RDS PostgreSQL 16, ECS Fargate API + Workers, SQS, S3, CloudFront OAC).
-- **Cost-Optimized Cloud Deployment ($15–$20/mo)**: Single EC2 (`t4g.small` ARM Graviton) running Compose + Caddy (automatic TLS via Let's Encrypt / `sslip.io`) + MongoDB Atlas M0 (Free 3-node replica set) + SQS/S3 via EC2 IAM role. Ideal for hosting live demonstrations sustainably within introductory credit budgets.
-- **Deployment Guide & Cost Analysis**: [docs/deployment/aws-deployment-guide.md](docs/deployment/aws-deployment-guide.md) (realistic 2026 AWS pricing breakdown, unified entry point, ALB health checks, and step-by-step runbooks).
-- **CI/CD Workflow**: [.github/workflows/deploy-aws.yml](.github/workflows/deploy-aws.yml) (automated container builds, ECR push, ECS service updates, and CDN invalidation).
+- **Enterprise Reference Architecture (Reference Blueprint)**: [infra/terraform/](infra/terraform/) (Multi-AZ VPC, ALB with unauthenticated `/healthz` probe, RDS PostgreSQL 16 Multi-AZ, ECS Fargate API & Workers, SQS, S3, CloudFront OAC).
+- **Cost-Optimized Single-Instance Deployment ($15–$20/mo)**: [infra/single-instance/](infra/single-instance/) (Docker Compose, Caddy auto-HTTPS via `sslip.io`, MongoDB Atlas M0, real AWS SQS/S3 via EC2 IAM instance profile).
+- **Architecture & Deployment Guide**: [docs/deployment/aws-deployment-guide.md](docs/deployment/aws-deployment-guide.md) (realistic AWS cost breakdown, billing guardrails, deployment walkthrough, and operational runbooks).
+- **CI/CD Workflow**: [.github/workflows/deploy-aws.yml](.github/workflows/deploy-aws.yml) (automated image building, ECR push, ECS service updates, and S3/CloudFront cache invalidations).
 

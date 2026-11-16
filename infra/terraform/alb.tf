@@ -23,7 +23,7 @@ resource "aws_lb_target_group" "api" {
 
   health_check {
     enabled             = true
-    path                = "/healthz/"
+    path                = "/healthz"
     port                = "8000"
     protocol            = "HTTP"
     healthy_threshold   = 2

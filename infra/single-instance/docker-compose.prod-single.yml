@@ -1,0 +1,95 @@
+version: '3.8'
+
+# Cost-Optimized Single-Instance Deployment (~$15-$20/month)
+# Runs on one AWS EC2 instance (t4g.small ARM64 or t3.small x86) with an attached IAM role.
+# Leverages MongoDB Atlas M0 (Free Tier) and real AWS SQS/S3 via EC2 IAM Instance Profile.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: forge-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../apps/web/dist:/srv/web:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: forge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-forge_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Database password required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-forge_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    container_name: forge-api
+    restart: unless-stopped
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:?Django secret key required}
+      - FORGE_SERVER_SECRET=${FORGE_SERVER_SECRET:?Server secret required}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?JWT secret key required}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-forge_db}
+      - MONGO_URI=${MONGO_URI:?MongoDB Atlas connection URI required}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - SQS_QUEUE_URL=${SQS_QUEUE_URL:-}
+      - S3_EXPORT_BUCKET=${S3_EXPORT_BUCKET:-}
+      - DEBUG=False
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  workers:
+    build:
+      context: ../..
+      dockerfile: apps/workers/Dockerfile
+    container_name: forge-workers
+    restart: unless-stopped
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:?Django secret key required}
+      - FORGE_SERVER_SECRET=${FORGE_SERVER_SECRET:?Server secret required}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-forge_db}
+      - MONGO_URI=${MONGO_URI:?MongoDB Atlas connection URI required}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - SQS_QUEUE_URL=${SQS_QUEUE_URL:-}
+      - S3_EXPORT_BUCKET=${S3_EXPORT_BUCKET:-}
+      - WORKER_POLL_INTERVAL=1.0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

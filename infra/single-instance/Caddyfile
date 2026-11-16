@@ -1,0 +1,41 @@
+# Caddyfile for Forge Single-Instance Deployment
+# Automatic HTTPS via Let's Encrypt using sslip.io or your domain
+{
+    admin off
+}
+
+# Replace {$DOMAIN} with your sslip.io address (e.g. forge.54.210.12.34.sslip.io)
+# or your custom domain (e.g. forge.example.com).
+# Defaults to localhost for local testing.
+{$DOMAIN:localhost} {
+    # Encode responses with gzip and zstd
+    encode zstd gzip
+
+    # Reverse proxy dynamic REST API and health checks to Django Gunicorn container
+    handle /api/* {
+        reverse_proxy api:8000
+    }
+
+    handle /healthz {
+        reverse_proxy api:8000
+    }
+
+    handle /readyz {
+        reverse_proxy api:8000
+    }
+
+    # Serve static pre-compiled React 19 Web Studio SPA
+    handle {
+        root * /srv/web
+        try_files {path} /index.html
+        file_server
+    }
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
