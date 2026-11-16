@@ -23,14 +23,14 @@ resource "aws_lb_target_group" "api" {
 
   health_check {
     enabled             = true
-    path                = "/api/v1/schemas/types/"
+    path                = "/healthz/"
     port                = "8000"
     protocol            = "HTTP"
     healthy_threshold   = 2
     unhealthy_threshold = 3
     timeout             = 5
     interval            = 15
-    matcher             = "200,401"
+    matcher             = "200"
   }
 
   tags = {

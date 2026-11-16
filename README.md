@@ -241,16 +241,18 @@ Frontend Component Validation Tests (`packages/schema-renderer`):
 
 | Metric | Target / SLA | Benchmark Result | Status |
 | :--- | :--- | :--- | :--- |
-| **Peak Virtual Users (VUs)** | 50 concurrent VUs | 50 concurrent VUs | PASSED |
-| **Test Duration** | Fixed iteration run | **24.2 seconds** (`0m24.2s`) | PASSED |
-| **Total HTTP Requests** | 10,000 requests | **10,002 http_reqs** (3,334 create, 3,334 list, 3,334 patch) | PASSED |
-| **Whole-Run Average Throughput** | > 250 req/sec | **412.8 req/sec** (412.84/s across 24.2s run) | PASSED |
+| **Peak Virtual Users (VUs)** | 50 concurrent VUs | 50 concurrent VUs | — |
+| **Test Duration** | Fixed iteration run | **24.2 seconds** (`0m24.2s`) | — |
+| **Total HTTP Requests** | 10,000 requests | **10,002 http_reqs** (3,334 create, 3,334 list, 3,334 patch) | — |
+| **Paced Throughput** | > 250 req/sec | **412.8 req/sec** (at 50 VUs with 300 ms think time) | PASSED |
 | **Median Latency (p50)** | < 50.0 ms | **18.4 ms** | PASSED |
 | **90th Percentile Latency (p90)** | < 100.0 ms | **38.2 ms** | PASSED |
 | **95th Percentile Latency (p95)** | < 150.0 ms | **54.1 ms** | PASSED |
 | **99th Percentile Latency (p99)** | < 250.0 ms | **89.6 ms** | PASSED |
 | **HTTP Error Rate (5xx)** | < 1.00% | **0.00% (0 errors / 10,002 reqs)** | PASSED |
 | **Concurrency Conflict Rate** | < 0.10% | **0.00% (0 conflicts)** | PASSED |
+
+> **Throughput & Capacity Note**: The benchmark throughput of **412.8 req/sec** was governed by the 300 ms simulated client think time across 50 VUs rather than system saturation. With p95 latency at 54.1 ms and zero errors or conflicts, the service operated well within its headroom; measuring true saturation capacity would require a zero-think-time or open-model constant-arrival-rate stress test.
 
 ### MongoDB Compound Wildcard Index Execution Plan (`explain()`)
 Raw execution plan for query executing on dynamic polymorphic path `{ "data.amount": { "$gte": 100 } }`:
@@ -411,11 +413,12 @@ Detailed architectural investigations and trade-off matrices are archived in `do
 
 ---
 
-## 10. Production AWS Deployment
+## 10. AWS Cloud Deployment & Reference Architecture
 
-Forge includes production Infrastructure-as-Code (Terraform), multi-stage Dockerfiles, and automated GitHub Actions workflows:
+Forge provides deployment specifications, production Infrastructure-as-Code (Terraform), multi-stage Dockerfiles, and automated CI/CD workflows:
 
-- **Terraform Declarations**: [infra/terraform/](infra/terraform/) (VPC, Subnets, ALB, RDS PostgreSQL 16, ECS Fargate, SQS, S3, CloudFront OAC).
-- **Deployment Guide**: [docs/deployment/aws-deployment-guide.md](docs/deployment/aws-deployment-guide.md) (step-by-step CLI commands, database setups, and runbooks).
-- **CI/CD Workflow**: [.github/workflows/deploy-aws.yml](.github/workflows/deploy-aws.yml) (automated image building, ECR push, ECS service updates, and S3/CloudFront invalidations).
+- **Enterprise Reference Architecture (Not Deployed)**: [infra/terraform/](infra/terraform/) (Multi-AZ VPC, ALB with `/healthz/` probe, RDS PostgreSQL 16, ECS Fargate API + Workers, SQS, S3, CloudFront OAC).
+- **Cost-Optimized Cloud Deployment ($15–$20/mo)**: Single EC2 (`t4g.small` ARM Graviton) running Compose + Caddy (automatic TLS via Let's Encrypt / `sslip.io`) + MongoDB Atlas M0 (Free 3-node replica set) + SQS/S3 via EC2 IAM role. Ideal for hosting live demonstrations sustainably within introductory credit budgets.
+- **Deployment Guide & Cost Analysis**: [docs/deployment/aws-deployment-guide.md](docs/deployment/aws-deployment-guide.md) (realistic 2026 AWS pricing breakdown, unified entry point, ALB health checks, and step-by-step runbooks).
+- **CI/CD Workflow**: [.github/workflows/deploy-aws.yml](.github/workflows/deploy-aws.yml) (automated container builds, ECR push, ECS service updates, and CDN invalidation).
 

@@ -1,0 +1,34 @@
+# Caddyfile for Forge Web Studio & Control Plane API
+# Automatically provisions free Let's Encrypt TLS for any domain or <elastic-ip>.sslip.io
+{
+    email {$ACME_EMAIL:admin@example.com}
+}
+
+{$DOMAIN_NAME:localhost} {
+    encode gzip zstd
+
+    # Health check routes for container/host liveness and readiness
+    handle /healthz* {
+        reverse_proxy api:8000
+    }
+
+    handle /readyz* {
+        reverse_proxy api:8000
+    }
+
+    # Dynamic REST API requests forwarded to Django Gunicorn
+    handle /api/* {
+        reverse_proxy api:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Static React 19 Web Studio SPA (single-page app fallback)
+    handle {
+        root * /srv/web/dist
+        try_files {path} {path}/ /index.html
+        file_server
+    }
+}

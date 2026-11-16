@@ -1,0 +1,101 @@
+# Cost-Optimized Production Docker Compose for Forge ($15–$20/mo Deployment)
+# Runs on a single AWS EC2 instance (t4g.small ARM Graviton or t3.small x86)
+# Integrated with MongoDB Atlas M0 (Free 3-node replica set) & AWS SQS/S3 via EC2 IAM Role
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: forge-prod-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-forge_prod}
+      POSTGRES_USER: ${POSTGRES_USER:-forge_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-forge_user} -d ${POSTGRES_DB:-forge_prod}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - forge-internal
+
+  api:
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    container_name: forge-prod-api
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DJANGO_DEBUG: "False"
+      DJANGO_ALLOWED_HOSTS: "*"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-forge_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-forge_prod}"
+      MONGO_URI: ${MONGO_URI}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      FORGE_SERVER_SECRET: ${FORGE_SERVER_SECRET}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      SQS_OUTBOX_QUEUE_URL: ${SQS_OUTBOX_QUEUE_URL}
+      SQS_DLQ_QUEUE_URL: ${SQS_DLQ_QUEUE_URL}
+      S3_EXPORT_BUCKET_NAME: ${S3_EXPORT_BUCKET_NAME}
+    expose:
+      - "8000"
+    networks:
+      - forge-internal
+
+  workers:
+    build:
+      context: ../..
+      dockerfile: apps/workers/Dockerfile
+    container_name: forge-prod-workers
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DJANGO_DEBUG: "False"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-forge_user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-forge_prod}"
+      MONGO_URI: ${MONGO_URI}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      FORGE_SERVER_SECRET: ${FORGE_SERVER_SECRET}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      SQS_OUTBOX_QUEUE_URL: ${SQS_OUTBOX_QUEUE_URL}
+      SQS_DLQ_QUEUE_URL: ${SQS_DLQ_QUEUE_URL}
+      S3_EXPORT_BUCKET_NAME: ${S3_EXPORT_BUCKET_NAME}
+    networks:
+      - forge-internal
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: forge-prod-caddy
+    restart: always
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN_NAME: ${DOMAIN_NAME:-localhost}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../apps/web/dist:/srv/web/dist:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - forge-internal
+
+volumes:
+  postgres_prod_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  forge-internal:
+    driver: bridge

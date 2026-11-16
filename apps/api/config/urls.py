@@ -47,7 +47,9 @@ def readyz(request):
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("healthz", healthz, name="healthz"),
+    path("healthz/", healthz, name="healthz_slash"),
     path("readyz", readyz, name="readyz"),
+    path("readyz/", readyz, name="readyz_slash"),
     path("api/v1/auth/", include("apps.authentication.urls")),
     path("api/v1/schemas/", include("apps.schemas.urls")),
     path("api/v1/o/", include("apps.records.urls")),
