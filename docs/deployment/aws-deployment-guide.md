@@ -313,3 +313,4 @@ aws ecs update-service \
   --service forge-prod-api-service \
   --force-new-deployment
 ```
+

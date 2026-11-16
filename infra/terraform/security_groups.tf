@@ -99,3 +99,4 @@ resource "aws_security_group" "rds" {
     Name = "${var.app_name}-${var.environment}-rds-sg"
   }
 }
+

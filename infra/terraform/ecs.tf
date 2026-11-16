@@ -261,3 +261,4 @@ resource "aws_ecs_service" "workers" {
     assign_public_ip = false
   }
 }
+

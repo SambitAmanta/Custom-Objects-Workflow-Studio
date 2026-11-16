@@ -47,3 +47,4 @@ resource "aws_ssm_parameter" "database_url" {
   type  = "SecureString"
   value = "postgres://${aws_db_instance.postgres.username}:${random_password.db_password.result}@${aws_db_instance.postgres.endpoint}/${aws_db_instance.postgres.db_name}"
 }
+

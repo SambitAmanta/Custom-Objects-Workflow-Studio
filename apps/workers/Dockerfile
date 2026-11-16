@@ -39,3 +39,4 @@ USER forgeuser
 
 # Run unified worker runner (Relay, Webhook Dispatcher, CSV Exporter)
 CMD ["python", "apps/workers/run_worker.py", "--service", "all", "--interval", "1.0"]
+
