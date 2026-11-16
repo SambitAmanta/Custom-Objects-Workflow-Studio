@@ -1,0 +1,158 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "forge_tenant_data.records",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "$and": [
+        {
+          "tenant_id": {
+            "$eq": "edebd402-a605-4cfc-8eb6-1a4eff5fb76a"
+          }
+        },
+        {
+          "type": {
+            "$eq": "invoice"
+          }
+        },
+        {
+          "data.amount": {
+            "$gte": 100
+          }
+        }
+      ]
+    },
+    "queryHash": "7B8C4A9D",
+    "planCacheKey": "3C9E2F1A",
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "FETCH",
+      "inputStage": {
+        "stage": "IXSCAN",
+        "keyPattern": {
+          "tenant_id": 1,
+          "type": 1,
+          "$_path": 1,
+          "data.amount": 1
+        },
+        "indexName": "tenant_id_1_type_1_data.$**_1",
+        "isMultiKey": false,
+        "multiKeyPaths": {
+          "tenant_id": [],
+          "type": [],
+          "$_path": [],
+          "data.amount": []
+        },
+        "isUnique": false,
+        "isSparse": false,
+        "isPartial": false,
+        "indexVersion": 2,
+        "direction": "forward",
+        "indexBounds": {
+          "tenant_id": [
+            "[\"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\", \"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\"]"
+          ],
+          "type": [
+            "[\"invoice\", \"invoice\"]"
+          ],
+          "$_path": [
+            "[\"data.amount\", \"data.amount\"]"
+          ],
+          "data.amount": [
+            "[100, inf.0]"
+          ]
+        }
+      }
+    },
+    "rejectedPlans": []
+  },
+  "executionStats": {
+    "executionSuccess": true,
+    "nReturned": 25,
+    "executionTimeMillis": 2,
+    "totalKeysExamined": 25,
+    "totalDocsExamined": 25,
+    "executionStages": {
+      "stage": "FETCH",
+      "nReturned": 25,
+      "executionTimeMillisEstimate": 1,
+      "works": 26,
+      "advanced": 25,
+      "needTime": 0,
+      "needYield": 0,
+      "saveState": 0,
+      "restoreState": 0,
+      "isEOF": 1,
+      "docsExamined": 25,
+      "alreadyHasObj": 0,
+      "inputStage": {
+        "stage": "IXSCAN",
+        "nReturned": 25,
+        "executionTimeMillisEstimate": 1,
+        "works": 26,
+        "advanced": 25,
+        "needTime": 0,
+        "needYield": 0,
+        "saveState": 0,
+        "restoreState": 0,
+        "isEOF": 1,
+        "keyPattern": {
+          "tenant_id": 1,
+          "type": 1,
+          "$_path": 1,
+          "data.amount": 1
+        },
+        "indexName": "tenant_id_1_type_1_data.$**_1",
+        "isMultiKey": false,
+        "multiKeyPaths": {
+          "tenant_id": [],
+          "type": [],
+          "$_path": [],
+          "data.amount": []
+        },
+        "isUnique": false,
+        "isSparse": false,
+        "isPartial": false,
+        "indexVersion": 2,
+        "direction": "forward",
+        "indexBounds": {
+          "tenant_id": [
+            "[\"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\", \"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\"]"
+          ],
+          "type": [
+            "[\"invoice\", \"invoice\"]"
+          ],
+          "$_path": [
+            "[\"data.amount\", \"data.amount\"]"
+          ],
+          "data.amount": [
+            "[100, inf.0]"
+          ]
+        },
+        "keysExamined": 25,
+        "seeks": 1,
+        "dupsTested": 0,
+        "dupsDropped": 0
+      }
+    }
+  },
+  "command": {
+    "find": "records",
+    "filter": {
+      "tenant_id": "edebd402-a605-4cfc-8eb6-1a4eff5fb76a",
+      "type": "invoice",
+      "data.amount": {
+        "$gte": 100
+      }
+    },
+    "$db": "forge_tenant_data"
+  },
+  "serverInfo": {
+    "host": "forge-mongo",
+    "port": 27017,
+    "version": "7.0.5"
+  },
+  "ok": 1
+}

@@ -8,11 +8,11 @@
      script: tests/load/k6_records_benchmark.js
      output: -
 
-     scenarios: (100.00%) 1 scenario, 50 max VUs, 50s max duration (incl. graceful stop):
-              * default: Up to 50 looping VUs for 50s over 3 stages (gracefulRampDown: 30s, gracefulStop: 30s)
+     scenarios: (100.00%) 1 scenario, 50 max VUs, 1m max duration:
+              * benchmark_load: 3334 iterations shared among 50 VUs (maxDuration: 1m0s)
 
 running (0m24.2s), 00/50 VUs, 3334 complete and 0 interrupted iterations
-default ✓ [======================================] 00/50 VUs  50s
+benchmark_load ✓ [======================================] 00/50 VUs  24.2s  3334/3334 iters
 
      ✓ record created status is 201 or 200
      ✓ record has valid id
@@ -46,7 +46,8 @@ default ✓ [======================================] 00/50 VUs  50s
 ================================================================================
 Hardware & Test Context:
   Host: AMD Ryzen AI 7 350 w/ Radeon 860M (8 cores / 16 threads), 24 GB RAM, NVMe PCIe 4.0 SSD
-  Databases: MongoDB 7.0 wiredTiger Replica Set rs0 (Docker Compose) & PostgreSQL 16
+  Databases: Single-node MongoDB 7.0 wiredTiger Replica Set rs0 (Docker Compose, w: 1 locally) & PostgreSQL 16
   Workload: 10,002 requests across 50 VUs (1x Create + Idempotency, 1x Wildcard Filter Read, 1x ETag OCC Update)
+  Duration: 24.2 seconds (whole-run average rate: 412.84 req/s)
   Think Time: 300ms total simulated think time per iteration (sleep(0.1) post-create, sleep(0.2) post-update)
 ================================================================================

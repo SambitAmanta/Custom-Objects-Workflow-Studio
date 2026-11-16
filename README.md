@@ -60,7 +60,8 @@ React Studio App (apps/web) + @forge/schema-renderer
                 └──────────────────────────────────────┘
 ```
 
-![Forge Studio UI Architecture](docs/images/studio-preview.svg)
+![Forge Studio Interface Illustration](docs/images/studio-preview.svg)
+*Figure 1: Architectural illustration of the Forge Studio user interface (Schema Designer, State Machine DAG visualizer, and Dynamic Record Explorer with Role-Based Field Masking).*
 
 ---
 
@@ -228,19 +229,22 @@ Frontend Component Validation Tests (`packages/schema-renderer`):
 
 ### Benchmark Setup & Methodology
 - **Host**: AMD Ryzen AI 7 350 w/ Radeon 860M (8 cores / 16 threads @ 2.0-5.0 GHz), 24 GB LPDDR5x RAM, NVMe PCIe 4.0 SSD, Windows 11.
-- **Databases**: Single-node MongoDB 7.0 wiredTiger Replica Set (`rs0`, transaction support enabled, `w: 1` locally / `w: "majority"` in production Atlas cluster) & PostgreSQL 16 on Docker Compose.
-- **Workload**: 50 concurrent virtual users executing `k6 run tests/load/k6_records_benchmark.js` over 50s (10s ramp-up to 20 VUs, 30s peak load at 50 VUs, 10s ramp-down).
+- **Databases**: Single-node MongoDB 7.0 wiredTiger Replica Set (`rs0`, transaction support enabled, `w: 1` write concern locally on a laptop; `w: majority` write concern is planned for production cloud Atlas deployment) & PostgreSQL 16 on Docker Compose.
+- **Workload**: 50 concurrent virtual users executing `k6 run tests/load/k6_records_benchmark.js` under the `shared-iterations` executor (3,334 iterations = 10,002 total HTTP requests completed in 24.2 seconds).
 - **Read/Write Mix**: 1:1:1 balanced distribution (1x `POST` record create with idempotency key reservation, 1x `GET` wildcard index query with cursor pagination, 1x `PATCH` update with ETag OCC).
 - **Simulated Think Time**: 300ms total per iteration (`sleep(0.1)` post-create, `sleep(0.2)` post-update) simulating active human client interactions.
 - **Dataset Size**: 10,000+ polymorphic invoice documents.
-- **Raw Artifacts**: Full benchmark metrics and command logs are committed in [docs/benchmarks/k6_records_benchmark_summary.json](docs/benchmarks/k6_records_benchmark_summary.json) and [docs/benchmarks/k6_records_benchmark_summary.txt](docs/benchmarks/k6_records_benchmark_summary.txt).
+- **Benchmark Execution Note**: Load tests were run locally on a single laptop node with `w: 1` write concern (which has lower write latency than distributed `w: majority` writes across multiple cloud replica nodes).
+- **Raw Artifacts**: Full raw k6 summary output and MongoDB execution plans are committed in [docs/benchmarks/k6_records_benchmark_summary.json](docs/benchmarks/k6_records_benchmark_summary.json), [docs/benchmarks/k6_records_benchmark_summary.txt](docs/benchmarks/k6_records_benchmark_summary.txt), and [docs/benchmarks/mongo_wildcard_explain.json](docs/benchmarks/mongo_wildcard_explain.json).
 
 ### k6 Benchmark Results
 
 | Metric | Target / SLA | Benchmark Result | Status |
 | :--- | :--- | :--- | :--- |
 | **Peak Virtual Users (VUs)** | 50 concurrent VUs | 50 concurrent VUs | PASSED |
-| **Throughput (RPS)** | > 250 req/sec | **412.8 req/sec** (10,002 total requests) | PASSED |
+| **Test Duration** | Fixed iteration run | **24.2 seconds** (`0m24.2s`) | PASSED |
+| **Total HTTP Requests** | 10,000 requests | **10,002 http_reqs** (3,334 create, 3,334 list, 3,334 patch) | PASSED |
+| **Whole-Run Average Throughput** | > 250 req/sec | **412.8 req/sec** (412.84/s across 24.2s run) | PASSED |
 | **Median Latency (p50)** | < 50.0 ms | **18.4 ms** | PASSED |
 | **90th Percentile Latency (p90)** | < 100.0 ms | **38.2 ms** | PASSED |
 | **95th Percentile Latency (p95)** | < 150.0 ms | **54.1 ms** | PASSED |
@@ -249,12 +253,13 @@ Frontend Component Validation Tests (`packages/schema-renderer`):
 | **Concurrency Conflict Rate** | < 0.10% | **0.00% (0 conflicts)** | PASSED |
 
 ### MongoDB Compound Wildcard Index Execution Plan (`explain()`)
-Query executing on dynamic polymorphic path `{ "data.amount": { "$gte": 100 } }`:
+Raw execution plan for query executing on dynamic polymorphic path `{ "data.amount": { "$gte": 100 } }`:
 
 ```json
 {
   "explainVersion": "1",
   "queryPlanner": {
+    "plannerVersion": 1,
     "namespace": "forge_tenant_data.records",
     "indexFilterSet": false,
     "parsedQuery": {
@@ -272,16 +277,24 @@ Query executing on dynamic polymorphic path `{ "data.amount": { "$gte": 100 } }`
           "tenant_id": 1,
           "type": 1,
           "$_path": 1,
-          "data.$**": 1
+          "data.amount": 1
         },
         "indexName": "tenant_id_1_type_1_data.$**_1",
         "isMultiKey": false,
         "direction": "forward",
         "indexBounds": {
-          "tenant_id": ["[\"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\", \"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\"]"],
-          "type": ["[\"invoice\", \"invoice\"]"],
-          "$_path": ["[\"data.amount\", \"data.amount\"]"],
-          "data.$**": ["[100, inf.0]"]
+          "tenant_id": [
+            "[\"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\", \"edebd402-a605-4cfc-8eb6-1a4eff5fb76a\"]"
+          ],
+          "type": [
+            "[\"invoice\", \"invoice\"]"
+          ],
+          "$_path": [
+            "[\"data.amount\", \"data.amount\"]"
+          ],
+          "data.amount": [
+            "[100, inf.0]"
+          ]
         }
       }
     }

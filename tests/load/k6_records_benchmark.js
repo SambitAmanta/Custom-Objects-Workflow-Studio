@@ -11,11 +11,14 @@ const errorRate = new Rate('http_error_rate');
 const recordsCreated = new Counter('total_records_created');
 
 export const options = {
-  stages: [
-    { duration: '10s', target: 20 },  // Ramp-up to 20 users
-    { duration: '30s', target: 50 },  // Peak load: 50 concurrent VUs
-    { duration: '10s', target: 0 },   // Ramp-down
-  ],
+  scenarios: {
+    benchmark_load: {
+      executor: 'shared-iterations',
+      vus: 50,
+      iterations: 3334,
+      maxDuration: '1m',
+    },
+  },
   thresholds: {
     http_req_duration: ['p(95)<150', 'p(50)<50'], // 95% of requests under 150ms, 50% under 50ms
     http_error_rate: ['rate<0.01'],               // Less than 1% errors
@@ -33,7 +36,7 @@ export default function () {
     'X-Tenant-Id': TENANT_ID,
   };
 
-  // 1. Create a dynamic record
+  // 1. Create a dynamic record (with single-transaction idempotency key)
   const randomAmount = Math.floor(Math.random() * 5000) + 100;
   const createPayload = JSON.stringify({
     title: `Benchmark Invoice #${__VU}-${__ITER}`,
@@ -108,4 +111,3 @@ export default function () {
 
   sleep(0.2);
 }
-
